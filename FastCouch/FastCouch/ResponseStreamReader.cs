@@ -1,0 +1,284 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Sockets;
+using System.IO;
+using System.Threading;
+
+namespace FastCouch
+{
+    public class ResponseStreamReader
+    {
+        private Stream _stream;
+
+        private ReadState _readState = new ReadState();
+
+        private readonly Func<int, MemcachedCommand> _commandRetriever;
+        private readonly Action<MemcachedCommand> _onCommandComplete;
+        private readonly Action<MemcachedCommand> _onError;
+        private readonly Action _onDisconnect;
+
+        private const int ReceiveBufferSize = 4096;
+        private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
+        private readonly char[] _encodingBuffer = new char[ReceiveBufferSize];
+
+        private const int ResponseHeaderSize = 24;
+        private readonly byte[] _responseHeader = new byte[ResponseHeaderSize];
+
+        private const int MaxExtrasLength = 255;
+        private readonly byte[] _extras = new byte[MaxExtrasLength];
+
+        private const int MaxKeyLength = 255;
+        private readonly byte[] _key = new byte[MaxKeyLength];
+
+        private const int ErrorBufferSize = 4096;
+        private readonly byte[] _error = new byte[ErrorBufferSize];
+
+        private Action _currentReadState;
+
+        private int _bytesAvailableFromLastRead;
+        private int _currentByteInReceiveBuffer;
+
+        private object _gate = new object();
+
+        private bool _hasQuit;
+
+        public ResponseStreamReader(
+            Stream stream,
+            Func<int, MemcachedCommand> commandRetriever,
+            Action<MemcachedCommand> onCommandComplete,
+            Action<MemcachedCommand> onError,
+            Action onDisconnect)
+        {
+            _onError = onError;
+            _onCommandComplete = onCommandComplete;
+            _commandRetriever = commandRetriever;
+            _onDisconnect = onDisconnect;
+
+            _stream = stream;
+            _currentReadState = ReadResponseHeader;
+
+            BeginReading();
+        }
+
+        private void BeginReading()
+        {
+            ThreadPool.QueueUserWorkItem(_ => BeginRead());
+        }
+
+        private void ResetForNewResponse()
+        {
+            _readState = new ReadState();
+            _currentReadState = ReadResponseHeader;
+        }
+
+        private void BeginRead()
+        {
+            while (!_hasQuit)
+            {
+                var result = _stream.BeginRead(_receiveBuffer, 0, _receiveBuffer.Length, OnBeginReadComplete, null);
+
+                if (!result.CompletedSynchronously)
+                    return;
+
+                OnDataRead(result);
+            }
+        }
+       
+        private void OnBeginReadComplete(IAsyncResult result)
+        {
+            if (result.CompletedSynchronously)
+                return;
+
+            Thread.MemoryBarrier();
+
+            OnDataRead(result);
+            BeginRead();
+        }
+
+        private void OnDataRead(IAsyncResult result)
+        {
+            try
+            {
+                _bytesAvailableFromLastRead = _stream.EndRead(result);
+                _currentByteInReceiveBuffer = 0;
+
+                if (_bytesAvailableFromLastRead > 0)
+                {
+                    while (_currentByteInReceiveBuffer < _bytesAvailableFromLastRead && !_hasQuit)
+                    {
+                        _currentReadState();
+                    }
+                    
+                    if (_hasQuit)
+                    {
+                        Disconnnect();
+                    }
+                }
+                else
+                {
+                    Disconnnect();
+                }
+            }
+            catch
+            {
+                Disconnnect();
+            }
+        }
+
+        private void Disconnnect()
+        {
+            _hasQuit = true;
+            _onDisconnect();
+        }
+
+        private void ReadResponseHeader()
+        {
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _responseHeader, ref _readState.CurrentByteOfResponseHeader, _responseHeader.Length);
+
+            if (_readState.CurrentByteOfResponseHeader == _responseHeader.Length)
+            {
+                const int keyLengthFieldOffset = 2;
+                const int extrasLengthFieldOffset = 4;
+                const int responseStatusByteOffset = 6;
+                const int totalBodyLengthFieldOffset = 8;
+                const int opaqueFieldOffset = 12;
+                const int casFieldOffset = 16;
+
+                Opcode opcode = (Opcode)_responseHeader[0];
+                if (opcode == Opcode.Quit)
+                {
+                    _hasQuit = true;
+                    return;
+                }
+
+                var commandId = BitParser.ParseInt(_responseHeader, opaqueFieldOffset);
+
+                MemcachedCommand command = _commandRetriever(commandId);
+                _readState.Command = command;
+
+                _readState.KeyLength = BitParser.ParseUShort(_responseHeader, keyLengthFieldOffset);
+                _readState.ExtrasLength = _responseHeader[extrasLengthFieldOffset];
+
+                _readState.ResponseStatus = BitParser.ParseResponseStatus(_responseHeader, responseStatusByteOffset);
+                command.ResponseStatus = _readState.ResponseStatus;
+
+                //TODO: AK TotalBodyLength should *technically* be a uint and not an int. In the .NET world all lengths are typically ints, not uints.
+                //      Do we really care about supporting an extra bits worth of body length?  Who is storing values over 2GB in their memcache database? 
+
+                var totalBodyLength = BitParser.ParseInt(_responseHeader, totalBodyLengthFieldOffset);
+                _readState.ValueLength = totalBodyLength - _readState.ExtrasLength - _readState.KeyLength;
+
+                _readState.Cas = BitParser.ParseLong(_responseHeader, casFieldOffset);
+                command.Cas = _readState.Cas;
+
+                if (_readState.ResponseStatus == ResponseStatus.NoError)
+                {
+                    _currentReadState = ReadResponseExtras;
+                    ReadResponseExtras();
+                }
+                else
+                {
+                    _currentReadState = ReadError;
+                    ReadError();
+                }
+            }
+        }
+
+        private void ReadResponseExtras()
+        {
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _extras, ref _readState.CurrentByteOfExtras, _readState.ExtrasLength);
+
+            if (_readState.CurrentByteOfExtras >= _readState.ExtrasLength)
+            {
+                _currentReadState = ReadResponseKey;
+                ReadResponseKey();
+            }
+        }
+
+        private void ReadResponseKey()
+        {
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _key, ref _readState.CurrentByteOfKey, _readState.KeyLength);
+
+            if (_readState.CurrentByteOfKey >= _readState.KeyLength)
+            {
+                _currentReadState = ReadCommandResponse;
+                ReadCommandResponse();
+            }
+        }
+
+        private void ReadCommandResponse()
+        {
+            int numberConsumedByCommand = BufferUtils.CalculateMaxPossibleBytesForCopy(
+                                              _readState.CurrentByteOfValue,
+                                              _readState.ValueLength,
+                                              _currentByteInReceiveBuffer,
+                                              _bytesAvailableFromLastRead);
+
+            _readState.Command.Parse(
+                _readState.ResponseStatus,
+                new ArraySegment<byte>(_receiveBuffer, _currentByteInReceiveBuffer, numberConsumedByCommand),
+                new ArraySegment<byte>(_extras, 0, _readState.ExtrasLength),
+                new ArraySegment<byte>(_key, 0, _readState.KeyLength),
+                new ArraySegment<char>(_encodingBuffer),
+                _readState.CurrentByteOfValue,
+                _readState.ValueLength);
+
+            _readState.CurrentByteOfValue += numberConsumedByCommand;
+            _currentByteInReceiveBuffer += numberConsumedByCommand;
+
+            if (_readState.CurrentByteOfValue > _readState.ValueLength)
+                throw new Exception("We read beyond the seams...");
+
+            if (_readState.CurrentByteOfValue == _readState.ValueLength)
+            {
+                _onCommandComplete(_readState.Command);
+                ResetForNewResponse();
+            }
+        }
+
+        private void ReadError()
+        {
+            int bytesToCopy = BufferUtils.CalculateMaxPossibleBytesForCopy(_currentByteInReceiveBuffer, _receiveBuffer.Length, _readState.CurrentByteOfValue, _readState.ValueLength);
+            _readState.Command.ErrorMessage += System.Text.Encoding.UTF8.GetString(_receiveBuffer, _currentByteInReceiveBuffer, bytesToCopy);
+
+            _currentByteInReceiveBuffer += bytesToCopy;
+            _readState.CurrentByteOfValue += bytesToCopy;
+
+            if (_readState.CurrentByteOfValue >= _readState.ValueLength)
+            {
+                _onError(_readState.Command);
+                ResetForNewResponse();
+            }
+        }
+
+        private struct ReadState
+        {
+            public MemcachedCommand Command;
+
+            public int KeyLength;
+            public int CurrentByteOfKey;
+
+            public int ExtrasLength;
+            public int CurrentByteOfExtras;
+
+            public ResponseStatus ResponseStatus;
+            public int ValueLength;
+            public int CurrentByteOfResponseHeader;
+
+            public long Cas;
+            public int CurrentByteOfValue;
+
+            public bool HasReadAllDataAfterHeader
+            {
+                get
+                {
+                    return
+                        this.CurrentByteOfValue >= this.ValueLength &&
+                        CurrentByteOfKey >= this.KeyLength &&
+                        this.CurrentByteOfExtras >= this.ExtrasLength;
+                }
+            }
+        }
+    }
+}

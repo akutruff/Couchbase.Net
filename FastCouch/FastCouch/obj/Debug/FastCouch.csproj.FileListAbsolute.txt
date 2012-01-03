@@ -1,0 +1,7 @@
+C:\code\main\utils\FastCouch\FastCouch\bin\Debug\FastCouch.dll
+C:\code\main\utils\FastCouch\FastCouch\bin\Debug\FastCouch.pdb
+C:\code\main\utils\FastCouch\FastCouch\bin\Debug\Json.dll
+C:\code\main\utils\FastCouch\FastCouch\bin\Debug\Json.pdb
+C:\code\main\utils\FastCouch\FastCouch\obj\Debug\FastCouch.csprojResolveAssemblyReference.cache
+C:\code\main\utils\FastCouch\FastCouch\obj\Debug\FastCouch.dll
+C:\code\main\utils\FastCouch\FastCouch\obj\Debug\FastCouch.pdb
