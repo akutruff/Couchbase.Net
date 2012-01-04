@@ -8,6 +8,7 @@ namespace FastCouch
     public abstract class MemcachedCommand
     {
         public MemcachedHeader RequestHeader;
+                                             
 
         public int Id { get; private set; }
 
@@ -94,6 +95,12 @@ namespace FastCouch
         public virtual void NotifyComplete()
         {
             OnComplete(ResponseStatus, string.Empty, this.Cas, this.State);
+        }
+
+        public void NotifyComplete(ResponseStatus status)
+        {
+            ResponseStatus = status;
+            NotifyComplete();
         }
     }
 }

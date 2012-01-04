@@ -48,6 +48,7 @@ namespace FastCouch
                     int charsUsed;
                     int bytesWritten;
                     bool completed;
+
                     _encoder.Convert(pChars + _currentCharacter, charactersToWrite, pBodyBuffer + bodyBuffer.Offset, bodyBuffer.Count, false, out charsUsed, out bytesWritten, out completed);
 
                     _currentCharacter += charsUsed;

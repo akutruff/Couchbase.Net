@@ -18,7 +18,9 @@ namespace FastCouch
         private readonly Action<MemcachedCommand> _onError;
         private readonly Action _onDisconnect;
 
-        private const int ReceiveBufferSize = 4096;
+        private const int ReceiveBufferSize = 32;
+        //private const int ReceiveBufferSize = 4096;
+
         private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
         private readonly char[] _encodingBuffer = new char[ReceiveBufferSize];
 
@@ -31,15 +33,10 @@ namespace FastCouch
         private const int MaxKeyLength = 255;
         private readonly byte[] _key = new byte[MaxKeyLength];
 
-        private const int ErrorBufferSize = 4096;
-        private readonly byte[] _error = new byte[ErrorBufferSize];
-
         private Action _currentReadState;
 
         private int _bytesAvailableFromLastRead;
         private int _currentByteInReceiveBuffer;
-
-        private object _gate = new object();
 
         private bool _hasQuit;
 
@@ -68,6 +65,11 @@ namespace FastCouch
 
         private void ResetForNewResponse()
         {
+            if (_errorDecoder != null)
+            {
+            	_errorDecoder.Dispose();
+            }
+
             _readState = new ReadState();
             _currentReadState = ReadResponseHeader;
         }
@@ -134,7 +136,7 @@ namespace FastCouch
 
         private void ReadResponseHeader()
         {
-            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _responseHeader, ref _readState.CurrentByteOfResponseHeader, _responseHeader.Length);
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _bytesAvailableFromLastRead, _responseHeader, ref _readState.CurrentByteOfResponseHeader, _responseHeader.Length);
 
             if (_readState.CurrentByteOfResponseHeader == _responseHeader.Length)
             {
@@ -145,7 +147,7 @@ namespace FastCouch
                 const int opaqueFieldOffset = 12;
                 const int casFieldOffset = 16;
 
-                Opcode opcode = (Opcode)_responseHeader[0];
+                Opcode opcode = (Opcode)_responseHeader[1];
                 if (opcode == Opcode.Quit)
                 {
                     _hasQuit = true;
@@ -153,7 +155,9 @@ namespace FastCouch
                 }
 
                 var commandId = BitParser.ParseInt(_responseHeader, opaqueFieldOffset);
-
+                
+                //Console.WriteLine(opcode.ToString() + " " + (commandId + Int32.MinValue));
+                
                 MemcachedCommand command = _commandRetriever(commandId);
                 _readState.Command = command;
 
@@ -187,7 +191,7 @@ namespace FastCouch
 
         private void ReadResponseExtras()
         {
-            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _extras, ref _readState.CurrentByteOfExtras, _readState.ExtrasLength);
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _bytesAvailableFromLastRead, _extras, ref _readState.CurrentByteOfExtras, _readState.ExtrasLength);
 
             if (_readState.CurrentByteOfExtras >= _readState.ExtrasLength)
             {
@@ -198,7 +202,7 @@ namespace FastCouch
 
         private void ReadResponseKey()
         {
-            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _receiveBuffer.Length, _key, ref _readState.CurrentByteOfKey, _readState.KeyLength);
+            BufferUtils.CopyAsMuchAsPossible(_receiveBuffer, ref _currentByteInReceiveBuffer, _bytesAvailableFromLastRead, _key, ref _readState.CurrentByteOfKey, _readState.KeyLength);
 
             if (_readState.CurrentByteOfKey >= _readState.KeyLength)
             {
@@ -237,16 +241,25 @@ namespace FastCouch
             }
         }
 
+        private StringDecoder _errorDecoder;
         private void ReadError()
         {
-            int bytesToCopy = BufferUtils.CalculateMaxPossibleBytesForCopy(_currentByteInReceiveBuffer, _receiveBuffer.Length, _readState.CurrentByteOfValue, _readState.ValueLength);
-            _readState.Command.ErrorMessage += System.Text.Encoding.UTF8.GetString(_receiveBuffer, _currentByteInReceiveBuffer, bytesToCopy);
+            int bytesToCopy = BufferUtils.CalculateMaxPossibleBytesForCopy(_currentByteInReceiveBuffer, _bytesAvailableFromLastRead, _readState.CurrentByteOfValue, _readState.ValueLength);
+            
+            if (_readState.CurrentByteOfValue == 0)
+            {
+            	_errorDecoder = new StringDecoder();
+            }
+
+            _errorDecoder.Decode(new ArraySegment<byte>(_receiveBuffer, _bytesAvailableFromLastRead, bytesToCopy));
+            //_readState.Command.ErrorMessage += System.Text.Encoding.UTF8.GetString(_receiveBuffer, _currentByteInReceiveBuffer, bytesToCopy);
 
             _currentByteInReceiveBuffer += bytesToCopy;
             _readState.CurrentByteOfValue += bytesToCopy;
 
             if (_readState.CurrentByteOfValue >= _readState.ValueLength)
             {
+                _readState.Command.ErrorMessage = _errorDecoder.ToString();
                 _onError(_readState.Command);
                 ResetForNewResponse();
             }

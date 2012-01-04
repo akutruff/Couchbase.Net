@@ -8,7 +8,6 @@ namespace FastCouch
 {
     public class HttpClient : IDisposable
     {
-        private static BufferPool<byte> BufferPool = new BufferPool<byte>(32, 4096);
 
         public string HostName { get; private set; }
         public int Port { get; private set; }
@@ -32,13 +31,11 @@ namespace FastCouch
                     return false;
             }
 
-            command.UriBuilder.Host = this.HostName;
-            command.UriBuilder.Port = this.Port;
+            command.SetHost(this.HostName, this.Port);
 
             var request = (HttpWebRequest)HttpWebRequest.Create(command.UriBuilder.Uri);
-            
-            command.HttpReadState = new HttpReadState(request);
-            
+
+            command.BeginRequest(request);            
             try
             {
                 request.BeginGetResponse(OnBeginGetResponseCompleted, command);
@@ -61,9 +58,8 @@ namespace FastCouch
                 var response = request.EndGetResponse(result);
                 
                 var stream = response.GetResponseStream();
-                
-                command.HttpReadState.Stream = stream;
-                command.HttpReadState.Buffer = BufferPool.Get();
+
+                command.OnGotResponse(stream);                
                 
                 BeginRead(command);
             }
@@ -116,20 +112,8 @@ namespace FastCouch
         
         private void OnFailure(HttpCommand command)
         {
-            CleanupHttpReadState(command);
+            command.EndReading();
             _onFailure(this.HostName, command);
-        }
-        
-        private static void CleanupHttpReadState(HttpCommand command)
-        {
-            if (command.HttpReadState.StringDecoder != null)
-            {
-                command.HttpReadState.StringDecoder.Dispose();
-            }
-
-            BufferPool.Return(command.HttpReadState.Buffer);
-            
-            command.HttpReadState = new HttpReadState();
         }
 
         private void EndRead(HttpCommand command, IAsyncResult result)
@@ -139,17 +123,12 @@ namespace FastCouch
 
             if (bytesRead > 0)
             {
-                var buffer = command.HttpReadState.Buffer;
 
-                command.HttpReadState.StringDecoder.Decode(new ArraySegment<byte>(buffer.Array, buffer.Offset, bytesRead));
-
+                command.OnRead(bytesRead);
             }
             else
             {
-                command.Value = command.HttpReadState.StringDecoder.ToString();
-
-                CleanupHttpReadState(command);
-
+                command.EndReading();
                 command.NotifyComplete();
             }
         }

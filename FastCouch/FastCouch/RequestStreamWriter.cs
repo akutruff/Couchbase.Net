@@ -15,7 +15,6 @@ namespace FastCouch
         private const int RequestBufferSize = 4096;
 
         private readonly byte[] _sendBuffer = new byte[RequestBufferSize];
-        private readonly char[] _encodingBuffer = new char[RequestBufferSize];
 
         private Func<MemcachedCommand, MemcachedCommand> _onCommandSent;
         private Action _onDisconnect;

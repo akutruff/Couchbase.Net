@@ -25,5 +25,6 @@ namespace FastCouch
 
         //These are not official memcache response statuses.  
         DisconnectionOccuredWhileOperationPending = 0x8000,
+        DisconnectionOccuredWhileOperationWaitingToBeSent = 0x8001,
     }
 }

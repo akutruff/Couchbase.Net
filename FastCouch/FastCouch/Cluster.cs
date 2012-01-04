@@ -6,10 +6,11 @@ using System.Collections;
 
 namespace FastCouch
 {
+    //Treat this as an immutable object.
     internal class Cluster
     {
         private List<List<Server>> _vBucketToServerMap;
-        private List<List<Server>> _fastForwardVBucketToServerMap;
+        private List<List<Server>> _fastForwardVBucketToServerMap = new List<List<Server>>();
         
         private List<List<int>> _vBucketToServerMapIndices;
         private List<List<int>> _fastForwardVBucketToServerMapIndices;
@@ -128,7 +129,7 @@ namespace FastCouch
             return _fastForwardVBucketToServerMap[vbucketId];
         }
 
-        public Server GetServerByHostname(string hostName)
+        public Server GetServerByHostName(string hostName)
         {
             Server server = null;
             _hostNameToServer.TryGetValue(hostName, out server);
@@ -152,7 +153,7 @@ namespace FastCouch
             }
 
             newCluster._hostNameToServer = new Dictionary<string, Server>(_hostNameToServer);
-
+           
             return newCluster;
         }
 

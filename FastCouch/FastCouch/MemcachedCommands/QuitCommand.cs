@@ -9,8 +9,8 @@ namespace FastCouch
     {
         public override Opcode Opcode { get { return FastCouch.Opcode.Quit; } }
 
-        public QuitCommand(int id)
-            : base(id, null, string.Empty, (status, value,cas, state) => { })
+        public QuitCommand(int id, Action<ResponseStatus, string, long, object> onComplete)
+            : base(id, null, string.Empty, onComplete)
         {
         }
     }

@@ -47,6 +47,8 @@
     <Compile Include="BufferPool.cs" />
     <Compile Include="BufferUtils.cs" />
     <Compile Include="Cluster.cs" />
+    <Compile Include="HttpReadState.cs" />
+    <Compile Include="MathUtils.cs" />
     <Compile Include="MemcachedCommands\DeleteCommand.cs" />
     <Compile Include="HttpClient.cs" />
     <Compile Include="HttpCommand.cs" />

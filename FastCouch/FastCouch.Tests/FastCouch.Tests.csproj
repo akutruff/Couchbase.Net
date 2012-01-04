@@ -51,8 +51,10 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="CouchbaseClientTest.cs" />
+    <Compile Include="ParserTest.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="RequestStreamWriterTest.cs" />
+    <Compile Include="StringDecoderTest.cs" />
     <Compile Include="TestStream.cs" />
   </ItemGroup>
   <ItemGroup>

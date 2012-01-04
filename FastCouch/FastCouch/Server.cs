@@ -4,6 +4,7 @@ using System.Linq;
 
 namespace FastCouch
 {
+    //Treat this as an immutable object.
     public class Server : IDisposable
     {
         public string HostName { get; private set; }
@@ -22,9 +23,8 @@ namespace FastCouch
         }
 
         public Server(string hostName)
-            : this(hostName, 1021)
+            : this(hostName, 11210)
         {
-            //"http://127.0.0.1:5984/default/_design/dev_DocumentOne/_view/SimpleMap?full_set=true&connection_timeout=60000&limit=10&skip=0";
         }
 
         public bool TrySend(MemcachedCommand command)
@@ -45,6 +45,11 @@ namespace FastCouch
             MemcachedClient client = CreateNewMemcachedClient(onRecoverableError, onDisconnected);
             this.MemcachedClient = client;
 
+            ConnectHttpClient(onHttpFailure);
+        }
+        
+        public void ConnectHttpClient(Action<string, HttpCommand> onHttpFailure)
+        {
             HttpClient = new HttpClient(this.HostName, this.ViewPort, onHttpFailure);
         }
         
@@ -59,7 +64,10 @@ namespace FastCouch
 
         public void Dispose()
         {
-            this.MemcachedClient.Dispose();
+            if (this.MemcachedClient != null)
+            {
+                this.MemcachedClient.Dispose();
+            }
         }
 
         public Server Clone()

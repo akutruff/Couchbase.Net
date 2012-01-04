@@ -239,19 +239,19 @@ namespace Json
                         {
                             throw new Exception("Invalid");
                         }
-                        break;
+                        return;
                     case 'f':
                         if (!SkipWord(json, ref index, "false"))
                         {
                             throw new Exception("Invalid");
                         }
-                        break;
+                        return;
                     case 'n':
                         if (!SkipWord(json, ref index, "null"))
                         {
                             throw new Exception("Invalid"); 
                         }
-                        break;
+                        return;
                     case ' ':
                     case '\n':
                     case '\r':

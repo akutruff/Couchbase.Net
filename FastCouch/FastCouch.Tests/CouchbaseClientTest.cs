@@ -4,6 +4,7 @@ using System.Linq;
 using System.Text;
 using NUnit.Framework;
 using System.Threading;
+using System.Diagnostics;
 
 namespace FastCouch.Tests
 {
@@ -15,13 +16,20 @@ namespace FastCouch.Tests
         [SetUp]
         public void Setup()
         {
-            _target = new CouchbaseClient("default", new Server("192.168.1.4"));
-            _target.WaitForInitialClusterUpdate();
+            //_target = new CouchbaseClient("default", new Server("192.168.1.4"));
+            //_target = new CouchbaseClient("default", new Server("192.168.1.13"));
+            //_target = new CouchbaseClient("default", new Server("spec4"));
+            //_target = new CouchbaseClient("default", new Server("192.168.1.9"));
+            //_target = new CouchbaseClient("default", new Server("patrick-pc"));
+
+            _target = CouchbaseClient.Connect("default", 10000, "spec4");
         }
 
         [TearDown]
         public void TearDown()
         {
+            _target.Quit(); // just be nice and try to let the servers know that weare closing down.
+            Thread.Sleep(250);
             _target.Dispose();
         }
 
@@ -33,7 +41,7 @@ namespace FastCouch.Tests
 
             var state = new object();
 
-            const int iterations = 1000;
+            const int iterations = 1;
 
             for (int i = 0; i < iterations; i++)
             {
@@ -41,7 +49,7 @@ namespace FastCouch.Tests
                 ResponseStatus receivedStatus;
                 object receivedState = null;
 
-                _target.Get("key1", (status, value, cas, stat) =>
+                _target.Get("Hello", (status, value, cas, stat) =>
                 {
                     receivedStatus = status;
                     receivedValue = value;
@@ -49,6 +57,7 @@ namespace FastCouch.Tests
                     Console.WriteLine(status.ToString() + " " + value);
                     lock (gate)
                     {
+                        Console.WriteLine(itemsCompleted);
                         if (++itemsCompleted == iterations)
                         {
                             Monitor.Pulse(gate);
@@ -66,41 +75,6 @@ namespace FastCouch.Tests
             }
         }
 
-        [Test]
-        public unsafe void EncoderTest()
-        {
-            //string str = "abcdefghijklmnop\u0135";
-            string str = "p\u0135";
-
-            var encoder = Encoding.UTF8.GetEncoder();
-            var buffer = new byte[2];
-
-            List<byte> encoded = new List<byte>();
-            int currentCharacter = 0;
-            int currentByte = 0;
-
-            while (currentCharacter < str.Length)
-            {
-                fixed (char* pString = str)
-                fixed (byte* pBuffer = buffer)
-                {
-                    var charactersLeft = str.Length - currentCharacter;
-
-                    int charsUsed;
-                    int bytesUsed;
-                    bool completed;
-                    encoder.Convert(pString + currentCharacter, charactersLeft, pBuffer + currentByte, buffer.Length, false, out charsUsed, out bytesUsed, out completed);
-
-                    currentCharacter += charsUsed;
-                    encoded.AddRange(buffer.Take(bytesUsed));
-                    Console.WriteLine("bytes: " + bytesUsed + " chars: " + charsUsed);
-                }
-            }
-
-            var encodedString = Encoding.UTF8.GetString(encoded.ToArray());
-            Console.WriteLine(encodedString);
-            Assert.AreEqual(str, encodedString);
-        }
 
         [Test]
         public void Set()
@@ -147,6 +121,60 @@ namespace FastCouch.Tests
         }
 
         [Test]
+        public void SetsAndGetsPerSecond()
+        {
+            object gate = new object();
+            //int itemsCompleted = 0;
+            int itemsCompleted = 0;
+            var state = new object();
+
+            var watch = Stopwatch.StartNew();
+            const int iterations = 100000;
+
+            const int totalItems = 2 * iterations;
+            //const int totalItems = iterations;
+
+            const string valueString = "{\"Str\":\"World\"}";
+
+            for (int i = 0; i < iterations; i++)
+            {
+                _target.Set("Hello", valueString,
+                    (status, value, cas, stat) =>
+                    {
+                        if (Interlocked.Increment(ref itemsCompleted) == totalItems)
+                        {
+                            lock (gate)
+                            {
+                                Monitor.Pulse(gate);
+                            }
+                        }
+                    }, state);
+
+                _target.Get("Hello", (status, value, cas, stat) =>
+                    {
+                        if (Interlocked.Increment(ref itemsCompleted) == totalItems)
+                        {
+                            lock (gate)
+                            {
+                                Monitor.Pulse(gate);
+                            }
+                        }
+                    }, state);
+            }
+
+            lock (gate)
+            {
+                while (itemsCompleted < totalItems)
+                {
+                    Monitor.Wait(gate, 3000);
+                    Console.WriteLine(itemsCompleted);
+                }
+            }
+
+            Console.WriteLine(watch.ElapsedMilliseconds);
+        }
+
+        [Test]
         [Explicit]
         public void BigValueTest()
         {
@@ -154,7 +182,7 @@ namespace FastCouch.Tests
             int setsCompleted = 0;
 
             var state = new object();
-            
+
             StringBuilder builder = new StringBuilder();
             builder.Append("{\"Str\":\"");
 
@@ -254,6 +282,7 @@ namespace FastCouch.Tests
         }
 
         [Test]
+        [Explicit]
         public void CheckForDisconnectTimeout()
         {
             Thread.Sleep(60000);
@@ -272,6 +301,7 @@ namespace FastCouch.Tests
                 _target.Quit();
             }
         }
+
 
         [Test]
         public void Delete()

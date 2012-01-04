@@ -39,11 +39,17 @@ namespace FastCouch
 
         public MemcachedClient(string hostName, int port)
         {
+            this.HostName = hostName; 
             _port = port;
-            this.HostName = hostName;
         }
 
         public void Connect()
+        {
+            var tcpClient = new TcpClient(HostName, _port);
+            Connect(tcpClient);
+        }
+
+        public void Connect(TcpClient tcpClient)
         {
             lock (_gate)
             {
@@ -52,7 +58,7 @@ namespace FastCouch
                     throw new Exception("Already connected");
                 }
 
-                _tcpClient = new TcpClient(HostName, _port);
+                _tcpClient = tcpClient;
                 _stream = _tcpClient.GetStream();
 
                 _isReaderConnectionOpen = true;
@@ -68,7 +74,7 @@ namespace FastCouch
             lock (_gate)
             {
                 _commandBeingSent = null;
-                if (_isReaderConnectionOpen && _isReaderConnectionOpen && !_hasBeenDisposed && _pendingSends.Count > 0)
+                if (_isWriterConnectionOpen && _isReaderConnectionOpen && !_hasBeenDisposed && _pendingSends.Count > 0)
                 {
                 	_commandBeingSent = _pendingSends.First.Value;
                     _pendingSends.RemoveFirst();
@@ -128,10 +134,17 @@ namespace FastCouch
             }
         }
 
+        private readonly HashSet<int> _alreadyReceived = new HashSet<int>();
+
         private MemcachedCommand GetPendingReceiveCommandById(int commandId)
         {
             lock (_gate)
             {
+                if (_alreadyReceived.Contains(commandId))
+                {
+                    throw new Exception();
+                }
+                _alreadyReceived.Add(commandId);
                 return _pendingReceives[commandId];
             }
         }
@@ -159,11 +172,8 @@ namespace FastCouch
                         }
                     }
                     break;
-                    throw new NotImplementedException("Need to implement retry on same server");
-                    //break;
                 case ResponseStatus.NoError:
                     throw new Exception("Should be impossible to get here...");
-                   
                 default:
                     //The error is not something we can deal with inside the library itself, either the caller screwed up, or there was a catastrophic failure.
                     command.NotifyComplete();
@@ -184,6 +194,9 @@ namespace FastCouch
             bool isWriterIdle = false;
             lock (_gate)
             {
+                if (_hasBeenDisposed)
+                    return false;
+                
                 var areEitherReaderOrWriterClosed = !_isReaderConnectionOpen || !_isWriterConnectionOpen;
                 
                 if (areEitherReaderOrWriterClosed || _hasBeenDisposed)
@@ -212,7 +225,7 @@ namespace FastCouch
 
             return true;
         }
-
+        
         public void Dispose()
         {
             lock (_gate)

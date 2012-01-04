@@ -49,7 +49,7 @@ namespace FastCouch
             ViewStalenessOptions stalenessOptions = ViewStalenessOptions.NotStale)
         {
             var uriBuilder = GetUrlForQuery(startKey, endKey, limit, skip, timeOut, sortDirection, stalenessOptions);
-            _client.ExecuteHttpQuery(uriBuilder, callback, state);
+            _client.ExecuteHttpQuery(uriBuilder, string.IsNullOrEmpty(startKey) ? endKey : startKey, callback, state);
         }
 
         private UriBuilder GetUrlForQuery(string startKey, string endKey, int limit, int skip, int timeOut, ViewSortDirection sortDirection, ViewStalenessOptions stalenessOptions)
