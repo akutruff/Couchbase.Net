@@ -7,11 +7,11 @@ namespace FastCouch
 {
     public class StringDecoder : IDisposable
     {
-        //private static BufferPool<char> BufferPool = new BufferPool<char>(256, 1024);
-        private static BufferPool<char> BufferPool = new BufferPool<char>(256, 24);
+        private static BufferPool<char> BufferPool = new BufferPool<char>(256, 1024);
         private StringBuilder _builder;
         private Decoder _decoder;
         private ArraySegment<char> _decodeBuffer;
+        private int _previousByte = 0;
 
         public StringDecoder()
         {
@@ -62,9 +62,7 @@ namespace FastCouch
             return totalCharactersAdded;
         }
 
-        int _previousByteForDecodeUntil = 0;
-
-        public bool DecodeUntilUtf8Character(ArraySegment<byte> sourceBuffer, char characterToResetDecoding, out string stringUpToCharacter, out ArraySegment<byte> bytesLeftover)
+        public bool DecodeAndSplitAtUtf8Character(ArraySegment<byte> sourceBuffer, char characterToResetDecoding, out string stringUpToCharacter, out ArraySegment<byte> bytesLeftover)
         {
             if ((characterToResetDecoding & 0xFF00) != 0)
             {
@@ -83,27 +81,34 @@ namespace FastCouch
                         char* pDecode = pDecodeArray + _decodeBuffer.Offset;
 
                         byte charAsByte = (byte)characterToResetDecoding;
-
+                        
                         for (int i = 0; i < sourceBuffer.Count; i++)
                         {
                             int currentByte = *(pSource + i);
-                            if (currentByte == charAsByte && (_previousByteForDecodeUntil & 0xFF00) == 0)
-                            {
 
-                                int numberOfBytesToDecode = i + 1;
+                            if (currentByte == charAsByte && (_previousByte & 0xFF00) == 0)
+                            {
+                                int numberOfBytesToDecode = i;
                                 Decode(pSource, numberOfBytesToDecode, pDecode, _decodeBuffer.Count);
 
                                 stringUpToCharacter = _builder.ToString();
-                                bytesLeftover = new ArraySegment<byte>(sourceBuffer.Array, sourceBuffer.Offset + numberOfBytesToDecode, sourceBuffer.Count - numberOfBytesToDecode);
+
+                                int bytesForRestOfStringExcludingTheSpecialCharacter = Math.Max(sourceBuffer.Count - numberOfBytesToDecode - 1, 0);
+
+                                int indexOfByteImmediatelyFollowingTheSpecialCharacter = Math.Min(sourceBuffer.Offset + numberOfBytesToDecode + 1, sourceBuffer.Count);
+
+                                bytesLeftover = new ArraySegment<byte>(sourceBuffer.Array, indexOfByteImmediatelyFollowingTheSpecialCharacter, bytesForRestOfStringExcludingTheSpecialCharacter);
 
                                 _builder = new StringBuilder();
-                                _previousByteForDecodeUntil = 0;
+                                _previousByte = 0;
 
                                 return true;
                             }
 
-                            _previousByteForDecodeUntil = currentByte;
+                            _previousByte = currentByte;
                         }
+
+                        Decode(pSource, sourceBuffer.Count, pDecode, _decodeBuffer.Count);
                     }
                 }
             }

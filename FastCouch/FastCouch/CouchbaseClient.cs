@@ -16,13 +16,10 @@ namespace FastCouch
         private bool _hasQuit;
         private bool _hasBeenDisposed;
 
-        internal static readonly IJsonParsingOperations<Cluster> ClusterParser;
-
         private object _gate = new object();
 
         private volatile Cluster _cluster;
 
-        private Thread _serverStreamingThread;
         private readonly string _bucketName;
 
         private int _currentCommandId = Int32.MinValue;
@@ -33,104 +30,91 @@ namespace FastCouch
 
         public CouchbaseClient(string bucketName, params Server[] servers)
         {
-            _bucketName = bucketName;
-            var cluster = new Cluster();
-
-            foreach (var server in servers)
+            lock (_gate)
             {
-                cluster.AddServer(server);
+                _bucketName = bucketName;
+                var cluster = new Cluster();
+
+                foreach (var server in servers)
+                {
+                    cluster.AddServer(server);
+                }
+
+                _cluster = cluster;
+
+                BeginStreamingFromNewServersInCluster();
+            }
+        }
+
+        public void BeginStreamingFromNewServersInCluster()
+        {
+            Cluster cluster = _cluster;
+
+            foreach (var server in cluster.Servers)
+            {
+                if (server.StreamingHttpClient == null)
+                {
+                    server.ConnectStreamingClient(OnServerStreamingMapDisconnected);
+                    RequestServerStreamingMap(server);
+                }
+            }
+        }
+
+        private void RequestServerStreamingMap(Server server)
+        {
+            string hostName = server.HostName;
+            var uri = new UriBuilder { Path = String.Format("pools/default/bucketsStreaming/{2}", hostName, server.StreamingPort, _bucketName) };
+
+            var streamingCommand = new LineReadingHttpCommand(uri, null, (json, _) => OnServerStreamMapUpdated(hostName, json), (response, value, state) => { });
+            server.StreamingHttpClient.TrySend(streamingCommand);
+        }
+
+        public bool OnServerStreamMapUpdated(string hostName, string json)
+        {
+            //Console.WriteLine("J: " + json);
+
+            if (string.IsNullOrEmpty(json))
+                return true;
+
+            var newCluster = new Cluster();
+            ClusterParser.Instance.Parse(json, newCluster);
+
+            lock (_gate)
+            {
+                if (_hasQuit)
+                {
+                    return false;
+                }
+                Cluster currentCluster = _cluster;
+
+                newCluster.ConnectMemcachedClients(currentCluster, OnErrorReceived, OnDisconnection, OnHttpFailure);
+
+                BeginStreamingFromNewServersInCluster();
+
+                _cluster = newCluster;
+
+                _hasClusterVBucketMapBeenUpdatedAtLeastOnce = true;
+                Monitor.Pulse(_gate);
             }
 
-            _cluster = cluster;
+            var isThisServerStillInTheCluster = newCluster.GetServerByHostName(hostName) != null;
 
-            _serverStreamingThread = new Thread(_ => GatherClusterInformationFromBucketStream());
-
-            _serverStreamingThread.IsBackground = true;
-
-            _serverStreamingThread.Start();
+            return isThisServerStillInTheCluster;
         }
 
-        static CouchbaseClient()
+        private void OnServerStreamingMapDisconnected(string hostName, HttpCommand command)
         {
-            ClusterParser = JsonParser.Create<Cluster>()
-                .OnGroup<Cluster>("vBucketServerMap", (cluster, value) => { }, cluster => cluster, JsonParser.Create<Cluster>()
-                    .OnArray("serverList", (cluster, serverNameAndPorts) =>
-                    {
-                        for (int i = 0; i < serverNameAndPorts.Count; i++)
-                        {
-                            var hostNameAndPortStrings = serverNameAndPorts[i].Split(':');
-
-                            string hostName = hostNameAndPortStrings[0];
-                            int port = Int32.Parse(hostNameAndPortStrings[1]);
-
-                            var server = new Server(hostName, port);
-
-                            cluster.AddServer(server);
-                        }
-                    }, JsonParser.StringParser)
-                    .OnArray("vBucketMap", (cluster, value) => cluster.SetVBucketToServerMap(value), new JsonArrayParser<int>(JsonParser.IntParser))
-                    .OnArray("vBucketMapForward", (cluster, value) => cluster.SetFastForwardVBucketToServerMap(value), new JsonArrayParser<int>(JsonParser.IntParser)));
-        }
-
-        public void GatherClusterInformationFromBucketStream()
-        {
-            Random rand = new Random();
-
-            while (!GetHasQuit())
+            Cluster cluster = _cluster;
+            if (!GetHasQuit() &&
+                cluster.GetServerByHostName(hostName) != null)
             {
-                var currentCluster = _cluster;
-
-                var server = currentCluster.Servers[rand.Next(currentCluster.Servers.Count)];
-
-                try
+                //Wait a bit and ensure that the retry is executed asynchronously.
+                ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    var requestUrl = String.Format("http://{0}:{1}/pools/default/bucketsStreaming/{2}", server.HostName, server.StreamingPort, _bucketName);
-                    var request = HttpWebRequest.Create(requestUrl);
-
-                    //TODO: are credentials required?
-
-                    var response = request.GetResponse();
-                    var stream = response.GetResponseStream();
-
-                    using (var reader = new StreamReader(stream))
-                    {
-                        while (!reader.EndOfStream)
-                        {
-                            var serverMapJson = reader.ReadLine();
-                            if (serverMapJson.Length > 0)
-                            {
-                                Cluster newCluster;
-
-                                lock (_gate)
-                                {
-                                    if (_hasQuit)
-                                    {
-                                        break;
-                                    }
-                                    //Console.WriteLine(serverMapJson);
-                                    newCluster = new Cluster();
-
-                                    ClusterParser.Parse(serverMapJson, newCluster);
-                                    newCluster.ConnectMemcachedClients(currentCluster, OnErrorReceived, OnDisconnection, OnHttpFailure);
-
-                                    _cluster = newCluster;
-
-                                    _hasClusterVBucketMapBeenUpdatedAtLeastOnce = true;
-                                    Monitor.Pulse(_gate);
-                                }
-
-                                if (newCluster.Servers.FirstOrDefault(x => x.HostName == server.HostName) == null)
-                                {
-                                    //server is no longer in cluster, so begin trying to stream from rest of cluster group
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-                catch
-                {
-                }
+                    Thread.Sleep(1000);
+                    var server = cluster.GetServerByHostName(hostName);
+                    RequestServerStreamingMap(server);
+                });
             }
         }
 
@@ -220,7 +204,7 @@ namespace FastCouch
             foreach (var server in cluster.Servers)
             {
                 var command = new QuitCommand(
-                    Interlocked.Increment(ref _currentCommandId), 
+                    Interlocked.Increment(ref _currentCommandId),
                     (response, value, cas, state) =>
                     {
                         server.Dispose();
@@ -376,7 +360,7 @@ namespace FastCouch
         private void OnErrorReceived(string hostName, MemcachedCommand command)
         {
             var cluster = _cluster;
-            
+
             switch (command.ResponseStatus)
             {
                 case ResponseStatus.VbucketBelongsToAnotherServer:
@@ -528,8 +512,6 @@ namespace FastCouch
             {
                 server.Dispose();
             }
-
-            _serverStreamingThread.Abort();
         }
     }
 }

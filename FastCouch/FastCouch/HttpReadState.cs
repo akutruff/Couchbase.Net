@@ -11,6 +11,7 @@ namespace FastCouch
         public ArraySegment<byte> Buffer;
 
         public HttpWebRequest WebRequest;
+        public WebResponse WebResponse;
         public Stream Stream;
         public StringDecoder StringDecoder;
 
@@ -19,6 +20,7 @@ namespace FastCouch
         public HttpReadState(HttpWebRequest request)
         {
             WebRequest = request;
+            WebResponse = null; 
             Stream = null;
             Buffer = new ArraySegment<byte>();
             StringDecoder = new StringDecoder();

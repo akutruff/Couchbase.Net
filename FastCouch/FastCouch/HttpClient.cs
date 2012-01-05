@@ -3,17 +3,19 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.IO;
+using System.Threading;
 
 namespace FastCouch
 {
     public class HttpClient : IDisposable
     {
-
         public string HostName { get; private set; }
         public int Port { get; private set; }
         private bool _hasBeenDisposed;
         private readonly object _gate = new object();
         private Action<string, HttpCommand> _onFailure;
+
+        HashSet<HttpCommand> _pendingCommands = new HashSet<HttpCommand>();
 
         public HttpClient(string hostName, int port, Action<string, HttpCommand> onFailure)
         {
@@ -28,26 +30,38 @@ namespace FastCouch
             lock (_gate)
             {
                 if (_hasBeenDisposed == true)
+                {
                     return false;
+                }
+                _pendingCommands.Add(command);
             }
 
             command.SetHost(this.HostName, this.Port);
 
-            var request = (HttpWebRequest)HttpWebRequest.Create(command.UriBuilder.Uri);
-
-            command.BeginRequest(request);            
             try
             {
-                request.BeginGetResponse(OnBeginGetResponseCompleted, command);
+                var request = (HttpWebRequest)HttpWebRequest.Create(command.UriBuilder.Uri);
+                command.BeginRequest(request);
+
+                var result = request.BeginGetResponse(OnBeginGetResponseCompleted, command);
+
+                //ThreadPool.RegisterWaitForSingleObject(result.AsyncWaitHandle, (object state, bool timedOut) =>
+                //    {
+                //        if (timedOut)
+                //        {
+                //            var httpCommand = (HttpCommand)state;
+                //            httpCommand.HttpReadState.WebRequest.Abort();
+                //        }
+                //    }, command, TimeSpan.FromSeconds(10), true);
+
+                return true;
             }
             catch
             {
-                OnFailure(command);
-                return false;
             }
-
-            return true;
+            return false;
         }
+
 
         private void OnBeginGetResponseCompleted(IAsyncResult result)
         {
@@ -55,18 +69,19 @@ namespace FastCouch
             try
             {
                 HttpWebRequest request = command.HttpReadState.WebRequest;
-                var response = request.EndGetResponse(result);
-                
-                var stream = response.GetResponseStream();
 
-                command.OnGotResponse(stream);                
-                
+                var response = request.EndGetResponse(result);
+                var stream = response.GetResponseStream();
+                command.OnGotResponse(response, stream);
+
                 BeginRead(command);
+                return;
             }
             catch
             {
-                OnFailure(command);
             }
+
+            OnFailure(command);
         }
 
         private void BeginRead(HttpCommand command)
@@ -96,6 +111,8 @@ namespace FastCouch
         {
             if (result.CompletedSynchronously)
                 return;
+            
+            Thread.MemoryBarrier();
 
             var command = (HttpCommand)result.AsyncState;
 
@@ -113,7 +130,18 @@ namespace FastCouch
         private void OnFailure(HttpCommand command)
         {
             command.EndReading();
+            
+            RemoveFromPendingCommands(command);
+
             _onFailure(this.HostName, command);
+        }
+        
+        private void RemoveFromPendingCommands(HttpCommand command)
+        {
+            lock (_gate)
+            {
+                _pendingCommands.Remove(command);
+            }
         }
 
         private void EndRead(HttpCommand command, IAsyncResult result)
@@ -121,23 +149,31 @@ namespace FastCouch
             var stream = command.HttpReadState.Stream;
             var bytesRead = stream.EndRead(result);
 
-            if (bytesRead > 0)
+            if (bytesRead > 0 && 
+                command.OnRead(bytesRead))
             {
+                return;
+            }
 
-                command.OnRead(bytesRead);
-            }
-            else
-            {
-                command.EndReading();
-                command.NotifyComplete();
-            }
+            command.EndReading();
+            RemoveFromPendingCommands(command);
+
+            command.NotifyComplete();
         }
 
         public void Dispose()
         {
-            lock(_gate)
+            List<HttpCommand> copyOfPendingCommands;
+            lock (_gate)
             {
                 _hasBeenDisposed = true;
+                copyOfPendingCommands = _pendingCommands.ToList();
+            }
+
+            for (int i = 0; i < copyOfPendingCommands.Count; i++)
+            {
+                HttpCommand command = copyOfPendingCommands[i];
+                //Abort(command);
             }
         }
     }

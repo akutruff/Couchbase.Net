@@ -134,17 +134,10 @@ namespace FastCouch
             }
         }
 
-        private readonly HashSet<int> _alreadyReceived = new HashSet<int>();
-
         private MemcachedCommand GetPendingReceiveCommandById(int commandId)
         {
             lock (_gate)
             {
-                if (_alreadyReceived.Contains(commandId))
-                {
-                    throw new Exception();
-                }
-                _alreadyReceived.Add(commandId);
                 return _pendingReceives[commandId];
             }
         }

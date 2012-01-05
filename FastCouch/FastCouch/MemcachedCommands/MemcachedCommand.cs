@@ -53,7 +53,6 @@ namespace FastCouch
             ArraySegment<byte> bodyData,
             ArraySegment<byte> extras,
             ArraySegment<byte> key,
-            ArraySegment<char> encodingBuffer,
             int bytesOfBodyPreviouslyRead,
             int totalBodyLength)
         { 

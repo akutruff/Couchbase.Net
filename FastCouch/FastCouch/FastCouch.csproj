@@ -47,11 +47,14 @@
     <Compile Include="BufferPool.cs" />
     <Compile Include="BufferUtils.cs" />
     <Compile Include="Cluster.cs" />
+    <Compile Include="ClusterParser.cs" />
     <Compile Include="HttpReadState.cs" />
+    <Compile Include="LineReadingHttpCommand.cs" />
     <Compile Include="MathUtils.cs" />
     <Compile Include="MemcachedCommands\DeleteCommand.cs" />
     <Compile Include="HttpClient.cs" />
     <Compile Include="HttpCommand.cs" />
+    <Compile Include="MemcachedCommands\FlushCommand.cs" />
     <Compile Include="MemcachedCommands\MemcachedCommand.cs" />
     <Compile Include="CouchbaseClient.cs" />
     <Compile Include="MemcachedCommands\GetCommand.cs" />
@@ -66,7 +69,7 @@
     <Compile Include="Server.cs" />
     <Compile Include="MemcachedCommands\SetCommand.cs" />
     <Compile Include="StringDecoder.cs" />
-    <Compile Include="UriBuilderExtensions.cs" />
+    <Compile Include="UriQueryBuilder.cs" />
     <Compile Include="VBucketCalculator.cs" />
     <Compile Include="View.cs" />
   </ItemGroup>

@@ -16,13 +16,9 @@ namespace FastCouch.Tests
         [SetUp]
         public void Setup()
         {
-            //_target = new CouchbaseClient("default", new Server("192.168.1.4"));
-            //_target = new CouchbaseClient("default", new Server("192.168.1.13"));
-            //_target = new CouchbaseClient("default", new Server("spec4"));
-            //_target = new CouchbaseClient("default", new Server("192.168.1.9"));
-            //_target = new CouchbaseClient("default", new Server("patrick-pc"));
-
-            _target = CouchbaseClient.Connect("default", 10000, "spec4");
+            //_target = CouchbaseClient.Connect("default", 10000, "spec4");
+            _target = CouchbaseClient.Connect("default", Int32.MaxValue, "spec4");
+            //_target = CouchbaseClient.Connect("default", Int32.MaxValue, "192.168.1.4");
         }
 
         [TearDown]
@@ -31,6 +27,15 @@ namespace FastCouch.Tests
             _target.Quit(); // just be nice and try to let the servers know that weare closing down.
             Thread.Sleep(250);
             _target.Dispose();
+        }
+
+        [Test]
+        public void Test()
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                Thread.Sleep(100);
+            }
         }
 
         [Test]
@@ -121,6 +126,67 @@ namespace FastCouch.Tests
         }
 
         [Test]
+        public void FillUpWithForeignKeyedItems()
+        {
+            object gate = new object();
+            int itemsCompleted = 0;
+
+            var state = new object();
+
+            const int items = 100;
+            const int componentsPerItem = 5;
+            
+            Random rand = new Random();
+            
+            for (int i = 0; i < items; i++)
+            {                
+                string itemKey = "Item" + i;
+
+
+                _target.Set(itemKey, "{\"Number\":" + i + "}",
+                    (status, value, cas, stat) =>
+                    {
+                        Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
+                        lock (gate)
+                        {
+                            if (++itemsCompleted == items)
+                            {
+                                Monitor.Pulse(gate);
+                            }
+                        }
+                    }, state);
+
+                for (int j = 0; j < componentsPerItem; j++)
+                {
+                    //var owningItem = "Item" + rand.Next(items);
+
+                    string valueString = "{\"Type\":\"Component\",\"OwnerRef\":\"" + itemKey + "\",\"EntityRef\":" + j / 2 + "}";
+
+                    _target.Set("Component" + i + j, valueString,
+                        (status, value, cas, stat) =>
+                        {
+                            Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
+                            lock (gate)
+                            {
+                                if (++itemsCompleted == items)
+                                {
+                                    Monitor.Pulse(gate);
+                                }
+                            }
+                        }, state);
+                }
+            }
+
+            lock (gate)
+            {
+                while (itemsCompleted < items)
+                {
+                    Monitor.Wait(gate);
+                }
+            }
+        }
+
+        [Test]
         public void SetsAndGetsPerSecond()
         {
             object gate = new object();
@@ -132,7 +198,6 @@ namespace FastCouch.Tests
             const int iterations = 100000;
 
             const int totalItems = 2 * iterations;
-            //const int totalItems = iterations;
 
             const string valueString = "{\"Str\":\"World\"}";
 
@@ -161,17 +226,23 @@ namespace FastCouch.Tests
                         }
                     }, state);
             }
+            var timeForRequestsToBePosted = watch.Elapsed.TotalSeconds;
 
             lock (gate)
             {
                 while (itemsCompleted < totalItems)
                 {
-                    Monitor.Wait(gate, 3000);
-                    Console.WriteLine(itemsCompleted);
+                    Monitor.Wait(gate);
+                    //Console.WriteLine(itemsCompleted);
                 }
             }
+            watch.Stop();
 
-            Console.WriteLine(watch.ElapsedMilliseconds);
+            var totalTime = watch.Elapsed.TotalSeconds;
+            Console.WriteLine("total time: " + totalTime);
+            Console.WriteLine("requests time: " + timeForRequestsToBePosted);
+            Console.WriteLine("requests/sec: " + totalItems / timeForRequestsToBePosted);
+            Console.WriteLine("trips/sec: " + totalItems / totalTime);
         }
 
         [Test]
@@ -246,35 +317,6 @@ namespace FastCouch.Tests
             lock (gate)
             {
                 while (getsCompleted < iterations)
-                {
-                    Monitor.Wait(gate);
-                }
-            }
-        }
-
-        [Test]
-        public void ViewTest()
-        {
-            object gate = new object();
-            bool hasCompleted = false;
-
-            var state = new object();
-
-            var view = _target.GetView("DocumentOne", "SimpleMap");
-            view.Get((status, value, stat) =>
-                {
-                    Console.WriteLine(status.ToString());
-                    lock (gate)
-                    {
-                        Console.WriteLine(value);
-                        hasCompleted = true;
-                        Monitor.Pulse(gate);
-                    }
-                }, state);
-
-            lock (gate)
-            {
-                while (!hasCompleted)
                 {
                     Monitor.Wait(gate);
                 }

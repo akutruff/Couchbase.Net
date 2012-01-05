@@ -56,6 +56,7 @@
     <Compile Include="RequestStreamWriterTest.cs" />
     <Compile Include="StringDecoderTest.cs" />
     <Compile Include="TestStream.cs" />
+    <Compile Include="ViewTest.cs" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\Json\Json\Json.csproj">

@@ -81,15 +81,13 @@ namespace FastCouch
                 if (hostNameToExistingServer.TryGetValue(server.HostName, out existingServer))
                 {
                     server.MemcachedClient = existingServer.MemcachedClient;
-                    server.HttpClient = existingServer.HttpClient;
+                    server.ViewHttpClient = existingServer.ViewHttpClient;
+                    server.StreamingHttpClient = existingServer.StreamingHttpClient;
 
                     hostNameToExistingServer.Remove(server.HostName);
                 }
 
-                if (server.MemcachedClient == null)
-                {
-                    server.Connect(onRecoverableError, onDisconnected, onHttpFailure);
-                }
+                server.Connect(onRecoverableError, onDisconnected, onHttpFailure);
             }
 
             var existingServersThatAreNoLongerInTheCluster = hostNameToExistingServer.Values;

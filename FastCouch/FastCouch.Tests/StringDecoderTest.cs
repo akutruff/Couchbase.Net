@@ -64,7 +64,6 @@ namespace FastCouch.Tests
         [Test]
         public unsafe void DecoderMultipleMisalignedCallTest()
         {
-            //string str = "abcdefghijklmnop\u0135";
             string str = "\u0135\u0136\u0137\u0138\u0139";
 
             var decodeBuffer = new ArraySegment<char>(new char[3]);
@@ -82,7 +81,6 @@ namespace FastCouch.Tests
         [Test]
         public unsafe void DecodeUntilMultipleMisalignedCallTest()
         {
-            //string str = "abcdefghijklmnop\u0135";
             string str = "\u0135\n\u0136\u0137\u0138\u0139";
 
             var decodeBuffer = new ArraySegment<char>(new char[3]);
@@ -94,11 +92,11 @@ namespace FastCouch.Tests
 
             var bytesLeftOver = new ArraySegment<byte>(bytes.Take(4).ToArray());
 
-            Assert.IsTrue(decoder.DecodeUntilUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
-            Assert.AreEqual("\u0135\n", result);
+            Assert.IsTrue(decoder.DecodeAndSplitAtUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
+            Assert.AreEqual("\u0135", result);
             Assert.AreEqual(1, bytesLeftOver.Count);
 
-            Assert.IsFalse(decoder.DecodeUntilUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
+            Assert.IsFalse(decoder.DecodeAndSplitAtUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
             Assert.IsNull(result);
             Assert.AreEqual(0, bytesLeftOver.Count);
         }
@@ -119,15 +117,15 @@ namespace FastCouch.Tests
 
             string result;
 
-            Assert.IsTrue(decoder.DecodeUntilUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
-            Assert.AreEqual("\u0135\n", result);
+            Assert.IsTrue(decoder.DecodeAndSplitAtUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
+            Assert.AreEqual("\u0135", result);
             Assert.AreEqual(6, bytesLeftOver.Count);
 
-            Assert.IsTrue(decoder.DecodeUntilUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
-            Assert.AreEqual("\u0136\u0137\n", result);
+            Assert.IsTrue(decoder.DecodeAndSplitAtUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
+            Assert.AreEqual("\u0136\u0137", result);
             Assert.AreEqual(1, bytesLeftOver.Count);
 
-            Assert.IsFalse(decoder.DecodeUntilUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
+            Assert.IsFalse(decoder.DecodeAndSplitAtUtf8Character(bytesLeftOver, '\n', out result, out bytesLeftOver));
             Assert.IsNull(result);
             Assert.AreEqual(0, bytesLeftOver.Count);
         }

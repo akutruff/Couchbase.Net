@@ -18,11 +18,10 @@ namespace FastCouch
         private readonly Action<MemcachedCommand> _onError;
         private readonly Action _onDisconnect;
 
-        private const int ReceiveBufferSize = 32;
-        //private const int ReceiveBufferSize = 4096;
+        //4K should do nicely as a receive window I think.
+        private const int ReceiveBufferSize = 4096;
 
         private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
-        private readonly char[] _encodingBuffer = new char[ReceiveBufferSize];
 
         private const int ResponseHeaderSize = 24;
         private readonly byte[] _responseHeader = new byte[ResponseHeaderSize];
@@ -224,7 +223,6 @@ namespace FastCouch
                 new ArraySegment<byte>(_receiveBuffer, _currentByteInReceiveBuffer, numberConsumedByCommand),
                 new ArraySegment<byte>(_extras, 0, _readState.ExtrasLength),
                 new ArraySegment<byte>(_key, 0, _readState.KeyLength),
-                new ArraySegment<char>(_encodingBuffer),
                 _readState.CurrentByteOfValue,
                 _readState.ValueLength);
 
