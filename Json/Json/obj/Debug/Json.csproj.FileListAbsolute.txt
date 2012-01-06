@@ -1,5 +1,0 @@
-C:\code\main\utils\Json\Json\bin\Debug\Json.dll
-C:\code\main\utils\Json\Json\bin\Debug\Json.pdb
-C:\code\main\utils\Json\Json\obj\Debug\Json.csprojResolveAssemblyReference.cache
-C:\code\main\utils\Json\Json\obj\Debug\Json.dll
-C:\code\main\utils\Json\Json\obj\Debug\Json.pdb
