@@ -29,14 +29,6 @@ namespace FastCouch.Tests
             _target.Dispose();
         }
 
-        [Test]
-        public void Test()
-        {
-            for (int i = 0; i < 100; i++)
-            {
-                Thread.Sleep(100);
-            }
-        }
 
         [Test]
         public void Get()
@@ -54,7 +46,7 @@ namespace FastCouch.Tests
                 ResponseStatus receivedStatus;
                 object receivedState = null;
 
-                _target.Get("Hello", (status, value, cas, stat) =>
+                _target.Get("Component00", (status, value, cas, stat) =>
                 {
                     receivedStatus = status;
                     receivedValue = value;

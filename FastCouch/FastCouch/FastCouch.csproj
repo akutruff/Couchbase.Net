@@ -43,6 +43,7 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="AsyncPattern.cs" />
     <Compile Include="BitParser.cs" />
     <Compile Include="BufferPool.cs" />
     <Compile Include="BufferUtils.cs" />

@@ -39,6 +39,8 @@ namespace FastCouch
 
         private bool _hasQuit;
 
+        AsyncPattern<Stream> _readAsync;
+
         public ResponseStreamReader(
             Stream stream,
             Func<int, MemcachedCommand> commandRetriever,
@@ -54,12 +56,17 @@ namespace FastCouch
             _stream = stream;
             _currentReadState = ReadResponseHeader;
 
+            _readAsync = AsyncPattern.Create(
+                (strea, pattern) => strea.BeginRead(_receiveBuffer, 0, _receiveBuffer.Length, pattern.OnCompleted, null),
+                OnBeginReadCompleted,
+                OnBeginReadFailed);
+
             BeginReading();
         }
 
         private void BeginReading()
         {
-            ThreadPool.QueueUserWorkItem(_ => BeginRead());
+            ThreadPool.QueueUserWorkItem(_ => _readAsync.BeginAsync(_stream));
         }
 
         private void ResetForNewResponse()
@@ -72,59 +79,33 @@ namespace FastCouch
             _readState = new ReadState();
             _currentReadState = ReadResponseHeader;
         }
-
-        private void BeginRead()
-        {
-            while (!_hasQuit)
-            {
-                var result = _stream.BeginRead(_receiveBuffer, 0, _receiveBuffer.Length, OnBeginReadComplete, null);
-
-                if (!result.CompletedSynchronously)
-                    return;
-
-                OnDataRead(result);
-            }
-        }
        
-        private void OnBeginReadComplete(IAsyncResult result)
+        private Stream OnBeginReadCompleted(IAsyncResult result)
         {
-            if (result.CompletedSynchronously)
-                return;
+            _bytesAvailableFromLastRead = _stream.EndRead(result);
+            _currentByteInReceiveBuffer = 0;
 
-            Thread.MemoryBarrier();
+            if (_bytesAvailableFromLastRead > 0)
+            {
+                while (_currentByteInReceiveBuffer < _bytesAvailableFromLastRead && !_hasQuit)
+                {
+                    _currentReadState();
+                }
 
-            OnDataRead(result);
-            BeginRead();
+                if (!_hasQuit)
+                {
+                    return _stream;
+                }
+            }
+
+            Disconnnect();
+            return null;
         }
 
-        private void OnDataRead(IAsyncResult result)
+        private Stream OnBeginReadFailed(IAsyncResult result, Exception e)
         {
-            try
-            {
-                _bytesAvailableFromLastRead = _stream.EndRead(result);
-                _currentByteInReceiveBuffer = 0;
-
-                if (_bytesAvailableFromLastRead > 0)
-                {
-                    while (_currentByteInReceiveBuffer < _bytesAvailableFromLastRead && !_hasQuit)
-                    {
-                        _currentReadState();
-                    }
-                    
-                    if (_hasQuit)
-                    {
-                        Disconnnect();
-                    }
-                }
-                else
-                {
-                    Disconnnect();
-                }
-            }
-            catch
-            {
-                Disconnnect();
-            }
+            Disconnnect();
+            return null;
         }
 
         private void Disconnnect()

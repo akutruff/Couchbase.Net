@@ -18,28 +18,36 @@ namespace FastCouch
 
         private Func<MemcachedCommand, MemcachedCommand> _onCommandSent;
         private Action _onDisconnect;
-        
+
         private int _currentByteInSendBuffer;
         private WriteState _writeState;
+
+        AsyncPattern<Stream> _writeAsync;
 
         public RequestStreamWriter(Stream stream, Func<MemcachedCommand, MemcachedCommand> onCommandSent, Action onDisconnect)
         {
             _stream = stream;
             _onCommandSent = onCommandSent;
             _onDisconnect = onDisconnect;
+
+            _writeAsync = AsyncPattern.Create(
+                (strea, pattern) => BeginWrite(),
+                OnBeginWriteComplete,
+                OnBeginWriteFailed);
         }
 
         public void Send(MemcachedCommand command)
         {
             Thread.MemoryBarrier();
-            InitiateCommand(command);            
-            BeginWrite();
+            InitiateCommand(command);
+
+            _writeAsync.BeginAsync(_stream);
         }
-        
+
         private void InitiateCommand(MemcachedCommand command)
         {
             WriteCommandHeader(command);
-            
+
             _writeState = new WriteState(command);
         }
 
@@ -48,7 +56,7 @@ namespace FastCouch
             command.BeginWriting();
 
             WriteRequestHeader(_sendBuffer, command.Opcode, command.RequestHeader);
-            
+
             const int requestHeaderSize = 24;
 
             _currentByteInSendBuffer += requestHeaderSize;
@@ -58,92 +66,56 @@ namespace FastCouch
             _currentByteInSendBuffer += command.RequestHeader.ExtrasLength;
 
             command.WriteKey(new ArraySegment<byte>(_sendBuffer, _currentByteInSendBuffer, command.RequestHeader.KeyLength));
-            
+
             _currentByteInSendBuffer += command.RequestHeader.KeyLength;
         }
-
-        private void BeginWrite()
+        
+        private IAsyncResult BeginWrite()
         {
-            try
-            {
-                WriteCommand();
-            }
-            catch
-            {
-                _onDisconnect();
-            }
+            int bytesToBeWrittenByCommand = BufferUtils.CalculateMaxPossibleBytesForCopy(_writeState.CurrentByteInValue, _writeState.TotalBytesInValue, _currentByteInSendBuffer, _sendBuffer.Length);
+
+            var bodyBuffer = new ArraySegment<byte>(_sendBuffer, _currentByteInSendBuffer, bytesToBeWrittenByCommand);
+
+            var bytesActuallyWritten = _writeState.Command.WriteValue(bodyBuffer, _writeState.CurrentByteInValue);
+
+            _currentByteInSendBuffer += bytesActuallyWritten;
+            _writeState.CurrentByteInValue += bytesActuallyWritten;
+
+            return _stream.BeginWrite(_sendBuffer, 0, _currentByteInSendBuffer, _writeAsync.OnCompleted, null);
         }
 
-        private void WriteCommand()
+        private Stream OnBeginWriteComplete(IAsyncResult result)
         {
-            IAsyncResult result;
-            do
+            _stream.EndWrite(result);
+            _currentByteInSendBuffer = 0;
+
+            if (_writeState.CurrentByteInValue < _writeState.TotalBytesInValue)
             {
-                int bytesToBeWrittenByCommand = BufferUtils.CalculateMaxPossibleBytesForCopy(_writeState.CurrentByteInValue, _writeState.TotalBytesInValue, _currentByteInSendBuffer, _sendBuffer.Length);
-
-                var bodyBuffer = new ArraySegment<byte>(_sendBuffer, _currentByteInSendBuffer, bytesToBeWrittenByCommand);
-                var bytesActuallyWritten = _writeState.Command.WriteValue(bodyBuffer, _writeState.CurrentByteInValue);
-
-                _currentByteInSendBuffer += bytesActuallyWritten;
-                _writeState.CurrentByteInValue += bytesActuallyWritten;
-
-                int sizeOfActualDataInSendBuffer = _currentByteInSendBuffer;
-
-                result = _stream.BeginWrite(_sendBuffer, 0, sizeOfActualDataInSendBuffer, OnBeginWriteComplete, null);
-
-                if (!result.CompletedSynchronously)
-                    return;
-
-            } while (OnSendComplete(result));
-        }
-
-        private void OnBeginWriteComplete(IAsyncResult result)
-        {
-            if (result.CompletedSynchronously)
-                return;
-            
-            Thread.MemoryBarrier();
-            
-            if (OnSendComplete(result))
-            {
-                BeginWrite();
+                return _stream;
             }
-        }
-
-        private bool OnSendComplete(IAsyncResult result)
-        {
-            try
+            else
             {
-                _stream.EndWrite(result);
-                _currentByteInSendBuffer = 0;
+                var nextCommand = _onCommandSent(_writeState.Command);
 
-                if (_writeState.CurrentByteInValue < _writeState.TotalBytesInValue)
+                if (nextCommand != null)
                 {
-                    return true;
+                    InitiateCommand(nextCommand);
+                    return _stream;
                 }
                 else
                 {
-                    var nextCommand = _onCommandSent(_writeState.Command);
-
-                    if (nextCommand != null)
-                    {
-                        InitiateCommand(nextCommand);
-                        return true;
-                    }
-                    else
-                    {
-                        return false;
-                    }
-                }                
+                    return null;
+                }
             }
-            catch
-            {
-                _onDisconnect();
-                return false;
-            }   
+        }
+        
+        private Stream OnBeginWriteFailed(IAsyncResult result, Exception e)
+        {
+            _onDisconnect();
+            return null;
         }
 
-        private static void WriteRequestHeader(Byte[] buffer, Opcode opcode,  MemcachedHeader header)
+        private static void WriteRequestHeader(Byte[] buffer, Opcode opcode, MemcachedHeader header)
         {
             buffer[0] = (byte)MagicBytes.RequestPacket;
 

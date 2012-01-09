@@ -53,6 +53,23 @@ namespace FastCouch
             _client.ExecuteHttpQuery(uriBuilder, !string.IsNullOrEmpty(key) ? key : !string.IsNullOrEmpty(startKey) ? startKey : endKey, callback, state);
         }
 
+        //Optimize for multi key gets, so that they may batched into one query
+        //public void EnqueueMultiKeyGet(
+        //    Action<ResponseStatus, string, object> callback,
+        //    object state,
+        //    string key = null,
+        //    string startKey = null,
+        //    string endKey = null,
+        //    int limit = -1,
+        //    int skip = -1,
+        //    int timeOut = -1,
+        //    ViewSortDirection sortDirection = ViewSortDirection.Ascending,
+        //    ViewStalenessOptions stalenessOptions = ViewStalenessOptions.NotStale)
+        //{
+        //    var uriBuilder = GetUrlForQuery(key, startKey, endKey, limit, skip, timeOut, sortDirection, stalenessOptions);
+        //    _client.ExecuteHttpQuery(uriBuilder, !string.IsNullOrEmpty(key) ? key : !string.IsNullOrEmpty(startKey) ? startKey : endKey, callback, state);
+        //}
+
         private UriBuilder GetUrlForQuery(string key, string startKey, string endKey, int limit, int skip, int timeOut, ViewSortDirection sortDirection, ViewStalenessOptions stalenessOptions)
         {
             StringBuilder stringBuilder = new StringBuilder();

@@ -87,7 +87,7 @@ namespace FastCouch
                 }
                 Cluster currentCluster = _cluster;
 
-                newCluster.ConnectMemcachedClients(currentCluster, OnErrorReceived, OnDisconnection, OnHttpFailure);
+                newCluster.ConnectMemcachedClients(currentCluster, OnPossiblyRecoverableMemcachedError, OnDisconnection, OnViewRequestError);
 
                 BeginStreamingFromNewServersInCluster();
 
@@ -252,7 +252,7 @@ namespace FastCouch
 
         private void OnDisconnection(string hostName, IEnumerable<MemcachedCommand> pendingSends, IEnumerable<MemcachedCommand> pendingReceives)
         {
-            NotifyCommands(pendingReceives, ResponseStatus.DisconnectionOccuredWhileOperationPending);
+            NotifyCommands(pendingReceives, ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
 
             if (GetHasQuit())
             {
@@ -348,7 +348,7 @@ namespace FastCouch
                 MemcachedClient newMemcachedClient = new MemcachedClient(serverInNewCluster.HostName, serverInNewCluster.Port);
 
                 newMemcachedClient.OnDisconnected += OnDisconnection;
-                newMemcachedClient.OnRecoverableError += OnErrorReceived;
+                newMemcachedClient.OnRecoverableError += OnPossiblyRecoverableMemcachedError;
                 newMemcachedClient.Connect(tcpClient);
 
                 serverInNewCluster.MemcachedClient = newMemcachedClient;
@@ -357,7 +357,7 @@ namespace FastCouch
             }
         }
 
-        private void OnErrorReceived(string hostName, MemcachedCommand command)
+        private void OnPossiblyRecoverableMemcachedError(string hostName, MemcachedCommand command)
         {
             var cluster = _cluster;
 
@@ -423,10 +423,10 @@ namespace FastCouch
 
             HttpCommand httpCommand = new HttpCommand(uriBuilder, state, callback);
 
-            TrySendToFirstAvailableServer(cluster, httpCommand, startOrEndKeyHint);
+            TrySendToviewRequestToFirstAvailableServer(cluster, httpCommand, startOrEndKeyHint);
         }
 
-        private void TrySendToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand, string keyHintForSelectingServer)
+        private void TrySendToviewRequestToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand, string keyHintForSelectingServer)
         {
             //We are going to use the key hint to help destribute which server should be getting the requests.
             if (!string.IsNullOrEmpty(keyHintForSelectingServer))
@@ -438,40 +438,41 @@ namespace FastCouch
                     return;
                 }
             }
-            TrySendToFirstAvailableServer(cluster, httpCommand);
+
+            TrySendViewRequestToFirstAvailableServer(cluster, httpCommand);
         }
 
-        private void TrySendToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand)
+        private void TrySendViewRequestToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand)
         {
             for (int i = 0; i < cluster.Servers.Count; i++)
             {
-                var serverToUseForHttpQuery = GetNextServerToUseForHttpQuery(cluster);
-                if (serverToUseForHttpQuery.TrySend(httpCommand))
+                var serverToUseForQuery = GetNextServerToUseForQuery(cluster);
+                if (serverToUseForQuery.TrySend(httpCommand))
                 {
                     return;
                 }
             }
 
-            httpCommand.NotifyComplete(ResponseStatus.DisconnectionOccuredWhileOperationPending);
+            httpCommand.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
         }
 
-        private Server GetNextServerToUseForHttpQuery(Cluster cluster)
+        private Server GetNextServerToUseForQuery(Cluster cluster)
         {
             uint indexOfNextServer = ((uint)Interlocked.Increment(ref _nextServerToUseForHttpQuery)) % (uint)cluster.Servers.Count;
             var server = cluster.Servers[(int)indexOfNextServer];
             return server;
         }
 
-        private void OnHttpFailure(string hostName, HttpCommand command)
+        private void OnViewRequestError(string hostName, HttpCommand command)
         {
             var cluster = _cluster;
             if (GetHasQuit())
             {
-                command.NotifyComplete(ResponseStatus.DisconnectionOccuredWhileOperationPending);
+                command.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
                 return;
             }
 
-            TrySendToFirstAvailableServer(cluster, command);
+            TrySendViewRequestToFirstAvailableServer(cluster, command);
         }
 
         private static void NotifyCommands(IEnumerable<MemcachedCommand> commands, ResponseStatus status)

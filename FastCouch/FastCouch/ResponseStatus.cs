@@ -24,7 +24,7 @@ namespace FastCouch
         TemporaryFailure = 0x0086,
 
         //These are not official memcache response statuses.  
-        DisconnectionOccuredWhileOperationPending = 0x8000,
+        DisconnectionOccuredBeforeOperationCouldBeSent = 0x8000,
         DisconnectionOccuredWhileOperationWaitingToBeSent = 0x8001,
     }
 }

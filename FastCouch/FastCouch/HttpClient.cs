@@ -15,14 +15,31 @@ namespace FastCouch
         private readonly object _gate = new object();
         private Action<string, HttpCommand> _onFailure;
 
+        AsyncPattern<HttpWebRequest, HttpCommand> _getResponseAsync;
+        AsyncPattern<Stream, HttpCommand> _readAsync;
+
         HashSet<HttpCommand> _pendingCommands = new HashSet<HttpCommand>();
 
         public HttpClient(string hostName, int port, Action<string, HttpCommand> onFailure)
         {
             HostName = hostName;
             Port = port;
-            
+
             _onFailure = onFailure;
+
+            _getResponseAsync = new AsyncPattern<HttpWebRequest, HttpCommand>(
+                (request, pattern, command) => request.BeginGetResponse(pattern.OnCompleted, command),
+                OnBeginGetResponseCompleted,
+                OnBeginGetResponseFailed);
+
+            _readAsync = new AsyncPattern<Stream, HttpCommand>(
+                (stream, pattern, command) => 
+                    {
+                        ArraySegment<byte> buffer = command.HttpReadState.Buffer;
+                        return stream.BeginRead(buffer.Array, buffer.Offset, buffer.Count, pattern.OnCompleted, command);
+                    },
+                OnBeginReadCompleted,
+                OnBeginReadFailed);
         }
 
         public bool TrySend(HttpCommand command)
@@ -37,105 +54,80 @@ namespace FastCouch
             }
 
             command.SetHost(this.HostName, this.Port);
+            var request = (HttpWebRequest)HttpWebRequest.Create(command.UriBuilder.Uri);
 
-            try
-            {
-                var request = (HttpWebRequest)HttpWebRequest.Create(command.UriBuilder.Uri);
-                command.BeginRequest(request);
+            command.BeginRequest(request);
 
-                var result = request.BeginGetResponse(OnBeginGetResponseCompleted, command);
+            return _getResponseAsync.BeginAsync(request, command);
+        }
+                
+        private AsyncPatternResult<HttpWebRequest, HttpCommand> OnBeginGetResponseCompleted(IAsyncResult result, HttpCommand command)
+        {
+            HttpWebRequest request = command.HttpReadState.WebRequest;
 
-                //ThreadPool.RegisterWaitForSingleObject(result.AsyncWaitHandle, (object state, bool timedOut) =>
-                //    {
-                //        if (timedOut)
-                //        {
-                //            var httpCommand = (HttpCommand)state;
-                //            httpCommand.HttpReadState.WebRequest.Abort();
-                //        }
-                //    }, command, TimeSpan.FromSeconds(10), true);
+            var response = request.EndGetResponse(result);
+            var stream = response.GetResponseStream();
+            command.OnGotResponse(response, stream);
 
-                return true;
-            }
-            catch
-            {
-            }
-            return false;
+            BeginRead(command);
+
+            return _getResponseAsync.Stop();
         }
 
-
-        private void OnBeginGetResponseCompleted(IAsyncResult result)
+        private AsyncPatternResult<HttpWebRequest, HttpCommand> OnBeginGetResponseFailed(IAsyncResult result, HttpCommand command, Exception e)
         {
-            HttpCommand command = (HttpCommand)result.AsyncState;
-            try
-            {
-                HttpWebRequest request = command.HttpReadState.WebRequest;
-
-                var response = request.EndGetResponse(result);
-                var stream = response.GetResponseStream();
-                command.OnGotResponse(response, stream);
-
-                BeginRead(command);
-                return;
-            }
-            catch
-            {
-            }
-
             OnFailure(command);
+            return _getResponseAsync.Stop();
         }
 
-        private void BeginRead(HttpCommand command)
+        private bool BeginRead(HttpCommand command)
         {
-            try
+            if (command.HttpReadState.HasStillMoreBytesToRead)
             {
                 var stream = command.HttpReadState.Stream;
-
-                while (command.HttpReadState.HasStillMoreBytesToRead)
-                {
-                    ArraySegment<byte> buffer = command.HttpReadState.Buffer;
-                    var result = stream.BeginRead(buffer.Array, buffer.Offset, buffer.Count, OnBeginReadCompleted, command);
-
-                    if (!result.CompletedSynchronously)
-                        return;
-
-                    EndRead(command, result);
-                }
+                return _readAsync.BeginAsync(stream, command);
             }
-            catch
+            else
             {
-                OnFailure(command);
+                return false;
             }
         }
-       
-        private void OnBeginReadCompleted(IAsyncResult result)
+
+        private AsyncPatternResult<Stream, HttpCommand> OnBeginReadCompleted(IAsyncResult result, HttpCommand command)
         {
-            if (result.CompletedSynchronously)
-                return;
-            
-            Thread.MemoryBarrier();
+            var stream = command.HttpReadState.Stream;
+            var bytesRead = stream.EndRead(result);
 
-            var command = (HttpCommand)result.AsyncState;
+            if (bytesRead > 0 &&
+                command.OnRead(bytesRead) &&
+                command.HttpReadState.HasStillMoreBytesToRead)
+            {
+                return _readAsync.Continue(command.HttpReadState.Stream, command);
+            }
 
-            try
-            {
-                EndRead(command, result);
-                BeginRead(command);
-            }
-            catch
-            {
-                OnFailure(command);
-            }
+            command.EndReading();
+            RemoveFromPendingCommands(command);
+
+            command.NotifyComplete();
+
+            return _readAsync.Stop();
         }
-        
+
+        private AsyncPatternResult<Stream, HttpCommand> OnBeginReadFailed(IAsyncResult result, HttpCommand command, Exception e)
+        {
+            OnFailure(command);
+            return _readAsync.Stop();
+        }
+
         private void OnFailure(HttpCommand command)
         {
             command.EndReading();
-            
+
             RemoveFromPendingCommands(command);
 
             _onFailure(this.HostName, command);
         }
-        
+
         private void RemoveFromPendingCommands(HttpCommand command)
         {
             lock (_gate)
@@ -146,19 +138,6 @@ namespace FastCouch
 
         private void EndRead(HttpCommand command, IAsyncResult result)
         {
-            var stream = command.HttpReadState.Stream;
-            var bytesRead = stream.EndRead(result);
-
-            if (bytesRead > 0 && 
-                command.OnRead(bytesRead))
-            {
-                return;
-            }
-
-            command.EndReading();
-            RemoveFromPendingCommands(command);
-
-            command.NotifyComplete();
         }
 
         public void Dispose()

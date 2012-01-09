@@ -60,15 +60,16 @@ namespace FastCouch.Tests
             var state = new object();
 
             var watch = Stopwatch.StartNew();
-            const int iterations = 5000;
+            const int iterations = 100;
 
             var view = _target.GetView("EntityDocument", "References");
+            //var view = _target.GetView("DocumentOne", "Again");
 
             for (int i = 0; i < iterations; i++)
             {
                 view.Get((status, value, stat) =>
                 {
-                    //Console.WriteLine(value.ToString());
+                    Console.WriteLine(value.ToString());
 
                     if (Interlocked.Increment(ref itemsCompleted) == iterations)
                     {
@@ -79,6 +80,7 @@ namespace FastCouch.Tests
                     }
                 },
                 state,
+                //"Component" + (i % 20) + 6);
                 "Component_Owner_Item" + i % 20);
             }
 
