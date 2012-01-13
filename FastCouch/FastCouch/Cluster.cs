@@ -17,11 +17,74 @@ namespace FastCouch
         
         public List<Server> Servers { get; private set; }
         
-        private Dictionary<string, Server> _hostNameToServer = new Dictionary<string, Server>();
+        private Dictionary<string, Server> _idToServer = new Dictionary<string, Server>();
 
         public Cluster()
         {
             this.Servers = new List<Server>();
+        }
+
+        public bool IsEquivalentConfiguration(Cluster otherCluster)
+        {
+            if (this.Servers.Count != otherCluster.Servers.Count)
+            {
+                return false;
+            }
+
+            var knownServersInThisCluster = new HashSet<string>(_idToServer.Keys);
+
+            foreach (var otherClusterServerId in otherCluster._idToServer.Keys)
+            {
+                if (!knownServersInThisCluster.Contains(otherClusterServerId))
+                {
+                    return false;
+                }
+            }
+
+            bool doVBucketMapsMatch = AreMapsEquivalent(this.Servers, _vBucketToServerMapIndices, otherCluster.Servers, otherCluster._vBucketToServerMapIndices) &&
+                                      AreMapsEquivalent(this.Servers, _fastForwardVBucketToServerMapIndices, otherCluster.Servers, otherCluster._fastForwardVBucketToServerMapIndices);
+
+            return doVBucketMapsMatch;
+        }
+
+        private static bool AreMapsEquivalent(List<Server> clusterOneServers, List<List<int>> clusterOneMapping, List<Server> clusterTwoServers, List<List<int>> clusterTwoMapping)
+        {
+            if (clusterOneMapping.Count != clusterTwoMapping.Count)
+            {
+                return false;
+            }
+
+            for (int i = 0; i < clusterOneMapping.Count; i++)
+            {
+                var sublistOne = clusterOneMapping[i];
+                var sublistTwo = clusterTwoMapping[i];
+
+                if (sublistOne.Count != sublistTwo.Count)
+                {
+                    return false;
+                }
+
+                for (int j = 0; j < sublistOne.Count; j++)
+                {
+                    int clusterOneServerIndex = sublistOne[j];
+                    int clusterTwoServerIndex = sublistTwo[j];
+
+                    if (clusterOneServerIndex == -1 || clusterTwoServerIndex == -1)
+                    {
+
+                    	if (clusterOneServerIndex != clusterTwoServerIndex)
+                        {
+                        	return false;
+                        }
+                    }
+                    else if (clusterOneServers[clusterOneServerIndex].Id != clusterTwoServers[clusterTwoServerIndex].Id)
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            return false;
         }
 
         public void SetVBucketToServerMap(List<List<int>> vBucketMap)
@@ -44,6 +107,7 @@ namespace FastCouch
             {
                 var serverIndicesForVBucket = vBucketMap[iVBucket];
                 var serversForVBucket = new List<Server>();
+             
                 vBucketToServerMap.Add(serversForVBucket);
 
                 for (int i = 0; i < serverIndicesForVBucket.Count; i++)
@@ -64,37 +128,37 @@ namespace FastCouch
         public void AddServer(Server server)
         {
             Servers.Add(server);
-            _hostNameToServer[server.HostName] = server;
+            _idToServer[server.Id] = server;
         }
 
-        public void ConnectMemcachedClients(
+        public void ConfigureClusterFromExistingClusterAndCommitAnyConnectionChanges(
             Cluster existingCluster, 
             Action<string, MemcachedCommand> onRecoverableError, 
             Action<string, IEnumerable<MemcachedCommand>, IEnumerable<MemcachedCommand>> onDisconnected,
             Action<string, HttpCommand> onHttpFailure)
         {
-            var hostNameToExistingServer = existingCluster.Servers.ToDictionary(x => x.HostName);
+            var serverIdToExistingServer = existingCluster.Servers.ToDictionary(x => x.Id);
 
             foreach (var server in Servers)
             {
                 Server existingServer;
-                if (hostNameToExistingServer.TryGetValue(server.HostName, out existingServer))
+                if (serverIdToExistingServer.TryGetValue(server.Id, out existingServer))
                 {
                     server.MemcachedClient = existingServer.MemcachedClient;
                     server.ViewHttpClient = existingServer.ViewHttpClient;
                     server.StreamingHttpClient = existingServer.StreamingHttpClient;
 
-                    hostNameToExistingServer.Remove(server.HostName);
+                    serverIdToExistingServer.Remove(server.Id);
                 }
 
                 server.Connect(onRecoverableError, onDisconnected, onHttpFailure);
             }
 
-            var existingServersThatAreNoLongerInTheCluster = hostNameToExistingServer.Values;
+            var existingServersThatAreNoLongerInTheCluster = serverIdToExistingServer.Values;
 
-            foreach (var serverToDispose in existingServersThatAreNoLongerInTheCluster)
+            foreach (var serverNoLongerReportedInCluster in existingServersThatAreNoLongerInTheCluster)
             {
-                serverToDispose.Dispose();
+                serverNoLongerReportedInCluster.Dispose();
             }
         }
 
@@ -119,7 +183,7 @@ namespace FastCouch
 
         public List<Server> GetFastForwardedServersForVBucket(int vbucketId)
         {
-            if (_fastForwardVBucketToServerMap == null)
+            if (vbucketId < 0 || vbucketId >= _fastForwardVBucketToServerMap.Count)
             {
                 return null;
             }
@@ -127,10 +191,10 @@ namespace FastCouch
             return _fastForwardVBucketToServerMap[vbucketId];
         }
 
-        public Server GetServerByHostName(string hostName)
+        public Server GetServerById(string id)
         {
             Server server = null;
-            _hostNameToServer.TryGetValue(hostName, out server);
+            _idToServer.TryGetValue(id, out server);
             return server;
         }
 
@@ -150,7 +214,7 @@ namespace FastCouch
                 newCluster.SetFastForwardVBucketToServerMap(DeepCopy(_fastForwardVBucketToServerMapIndices));
             }
 
-            newCluster._hostNameToServer = new Dictionary<string, Server>(_hostNameToServer);
+            newCluster._idToServer = newCluster.Servers.ToDictionary(x => x.Id);
            
             return newCluster;
         }

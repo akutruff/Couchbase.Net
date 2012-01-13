@@ -25,21 +25,22 @@ namespace FastCouch
 
         private NetworkStream _stream;
 
-        private readonly LinkedList<MemcachedCommand> _pendingSends = new LinkedList<MemcachedCommand>();
-        private MemcachedCommand _commandBeingSent;
+        private readonly Queue<MemcachedCommand> _pendingSends = new Queue<MemcachedCommand>();
 
         private readonly Dictionary<int, MemcachedCommand> _pendingReceives = new Dictionary<int, MemcachedCommand>();
 
         public string HostName { get; private set; }
+        public string ServerId { get; private set; }
 
         private readonly int _port;
 
         private bool _isWriterConnectionOpen;
         private bool _isReaderConnectionOpen;
 
-        public MemcachedClient(string hostName, int port)
+        public MemcachedClient(string serverId, string hostName, int port)
         {
-            this.HostName = hostName; 
+            ServerId = serverId;
+            this.HostName = hostName;
             _port = port;
         }
 
@@ -73,14 +74,15 @@ namespace FastCouch
         {
             lock (_gate)
             {
-                _commandBeingSent = null;
+                _pendingSends.Dequeue();
                 if (_isWriterConnectionOpen && _isReaderConnectionOpen && !_hasBeenDisposed && _pendingSends.Count > 0)
                 {
-                	_commandBeingSent = _pendingSends.First.Value;
-                    _pendingSends.RemoveFirst();
+                    var commandBeingSent = _pendingSends.Peek();
+                    _pendingReceives[commandBeingSent.Id] = commandBeingSent;
+                    return commandBeingSent;
                 }
 
-                return _commandBeingSent;
+                return null;
             }
         }
 
@@ -118,7 +120,8 @@ namespace FastCouch
 
                 if (isReaderTerminated && isWriterTerminated)
                 {
-                    pendingSends = _pendingSends.ToList();
+                    //The first item in the pending sends has actually already been passed along the wire so report as pendingReceive rather than pendingSend.
+                    pendingSends = _pendingSends.Skip(1).ToList();
                     pendingReceives = _pendingReceives.Values.ToList();
 
                     callbackForWhenBothReaderAndWriterHaveDisconnected = OnDisconnected;
@@ -130,7 +133,7 @@ namespace FastCouch
 
             if (callbackForWhenBothReaderAndWriterHaveDisconnected != null)
             {
-                callbackForWhenBothReaderAndWriterHaveDisconnected(this.HostName, pendingSends, pendingReceives);
+                callbackForWhenBothReaderAndWriterHaveDisconnected(this.ServerId, pendingSends, pendingReceives);
             }
         }
 
@@ -161,7 +164,7 @@ namespace FastCouch
                         var ev = OnRecoverableError;
                         if (ev != null)
                         {
-                            ev(this.HostName, command);
+                            ev(this.ServerId, command);
                         }
                     }
                     break;
@@ -189,25 +192,21 @@ namespace FastCouch
             {
                 if (_hasBeenDisposed)
                     return false;
-                
+
                 var areEitherReaderOrWriterClosed = !_isReaderConnectionOpen || !_isWriterConnectionOpen;
-                
+
                 if (areEitherReaderOrWriterClosed || _hasBeenDisposed)
                 {
                     return false;
                 }
 
-                _pendingReceives[command.Id] = command;
+                _pendingSends.Enqueue(command);
 
-                isWriterIdle = _commandBeingSent == null;
+                isWriterIdle = _pendingSends.Count == 1;
 
                 if (isWriterIdle)
                 {
-                    _commandBeingSent = command;
-                }
-                else
-                {
-                    _pendingSends.AddLast(command);
+                    _pendingReceives[command.Id] = command;
                 }
             }
 
@@ -218,7 +217,7 @@ namespace FastCouch
 
             return true;
         }
-        
+
         public void Dispose()
         {
             lock (_gate)
@@ -227,20 +226,10 @@ namespace FastCouch
                 {
                     return;
                 }
-                
+
                 _hasBeenDisposed = true;
 
-                try
-                {
-                    _stream.Close();
-                }
-                catch { }
-
-                try
-                {
-                    _tcpClient.Close();
-                }
-                catch { }
+                _tcpClient.SafeClose();
             }
         }
     }

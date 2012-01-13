@@ -38,7 +38,7 @@ namespace FastCouch.Tests
 
             var state = new object();
 
-            const int iterations = 1;
+            const int iterations = 100;
 
             for (int i = 0; i < iterations; i++)
             {
@@ -51,11 +51,11 @@ namespace FastCouch.Tests
                     receivedStatus = status;
                     receivedValue = value;
                     receivedState = stat;
-                    Console.WriteLine(status.ToString() + " " + value);
-                    lock (gate)
+                    //Console.WriteLine(status.ToString() + " " + value);
+
+                    if (Interlocked.Increment(ref itemsCompleted) == iterations)
                     {
-                        Console.WriteLine(itemsCompleted);
-                        if (++itemsCompleted == iterations)
+                        lock (gate)
                         {
                             Monitor.Pulse(gate);
                         }
@@ -81,7 +81,7 @@ namespace FastCouch.Tests
 
             var state = new object();
 
-            const int iterations = 1;
+            const int iterations = 100;
 
             for (int i = 0; i < iterations; i++)
             {
@@ -97,10 +97,12 @@ namespace FastCouch.Tests
                         receivedStatus = status;
                         receivedValue = value;
                         receivedState = stat;
-                        Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
-                        lock (gate)
+                        Assert.AreEqual(ResponseStatus.NoError, receivedStatus);
+
+                        if (Interlocked.Increment(ref itemsCompleted) == iterations)
                         {
-                            if (++itemsCompleted == iterations)
+                            //Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
+                            lock (gate)
                             {
                                 Monitor.Pulse(gate);
                             }
@@ -127,21 +129,22 @@ namespace FastCouch.Tests
 
             const int items = 100;
             const int componentsPerItem = 5;
-            
+
             Random rand = new Random();
-            
+
             for (int i = 0; i < items; i++)
-            {                
+            {
                 string itemKey = "Item" + i;
 
 
                 _target.Set(itemKey, "{\"Number\":" + i + "}",
                     (status, value, cas, stat) =>
                     {
-                        Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
-                        lock (gate)
+                        //Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
+
+                        if (Interlocked.Increment(ref itemsCompleted) == items)
                         {
-                            if (++itemsCompleted == items)
+                            lock (gate)
                             {
                                 Monitor.Pulse(gate);
                             }
@@ -157,10 +160,10 @@ namespace FastCouch.Tests
                     _target.Set("Component" + i + j, valueString,
                         (status, value, cas, stat) =>
                         {
-                            Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
-                            lock (gate)
+                            //Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
+                            if (Interlocked.Increment(ref itemsCompleted) == items)
                             {
-                                if (++itemsCompleted == items)
+                                lock (gate)
                                 {
                                     Monitor.Pulse(gate);
                                 }
@@ -270,9 +273,10 @@ namespace FastCouch.Tests
                     (status, value, cas, stat) =>
                     {
                         Console.WriteLine(status.ToString() + " " + value + " " + stat.ToString());
-                        lock (gate)
+
+                        if (Interlocked.Increment(ref setsCompleted) == iterations)
                         {
-                            if (++setsCompleted == iterations)
+                            lock (gate)
                             {
                                 Monitor.Pulse(gate);
                             }
@@ -295,11 +299,11 @@ namespace FastCouch.Tests
                 _target.Get("Hello", (status, value, cas, stat) =>
                 {
                     Console.WriteLine(status.ToString());
-                    lock (gate)
+
+                    if (Interlocked.Increment(ref getsCompleted) == iterations)
                     {
-                        if (++getsCompleted == iterations)
+                        lock (gate)
                         {
-                            Assert.AreEqual(valueString, value);
                             Monitor.Pulse(gate);
                         }
                     }

@@ -22,6 +22,7 @@ namespace Json
         IJsonParsingOperations<T> OnFloat(string fieldName, Action<T, float> onParsed);
         IJsonParsingOperations<T> OnBool(string fieldName, Action<T, bool> onParsed);
         IJsonParsingOperations<T> OnArray<TElement>(string fieldName, Action<T, List<TElement>> onParsed, IJsonValueParser<TElement> elementParser);
+        IJsonParsingOperations<T> OnArray<TSubGroup>(string fieldName, Action<T, List<TSubGroup>> onParsed, Func<T, TSubGroup> subGroupSelector, IJsonGroupParser<TSubGroup> subGroupParser);
     }
 
     public class JsonGroupParser<T> : IJsonParsingOperations<T>
@@ -149,6 +150,16 @@ namespace Json
             return this;
         }
 
+        public IJsonParsingOperations<T> OnArray<TSubGroup>(
+            string fieldName, 
+            Action<T, List<TSubGroup>> onParsed, 
+            Func<T, TSubGroup> subGroupSelector, 
+            IJsonGroupParser<TSubGroup> subGroupParser)
+        {
+            _callbacks[new HashedSubstring(fieldName)] = new JsonArrayOfSubGroupParsingCallback<TSubGroup>(subGroupParser, onParsed, subGroupSelector);
+            return this;
+        }
+
         public void AddCallback<TValue>(string fieldName, IJsonValueParser<TValue> jsonValueParser, Action<T, TValue> onParsed)
         {
             _callbacks[new HashedSubstring(fieldName)] = new JsonFieldParsingCallback<TValue>(jsonValueParser, onParsed);
@@ -195,6 +206,26 @@ namespace Json
                 var subGroup = _subGroupSelector(target);
                 _valueParser.Parse(json, ref index, subGroup);
                 _callback(target, subGroup);
+            }
+        }
+
+        private class JsonArrayOfSubGroupParsingCallback<TSubGroup> : IJsonFieldParsingCallback
+        {
+            private JsonArrayOfGroupParser<T, TSubGroup> _valueParser;
+            public Action<T, List<TSubGroup>> _callback;
+            private readonly Func<T, TSubGroup> _subGroupSelector;
+
+            public JsonArrayOfSubGroupParsingCallback(IJsonGroupParser<TSubGroup> valueParser, Action<T, List<TSubGroup>> callback, Func<T, TSubGroup> subGroupSelector)
+            {
+                _subGroupSelector = subGroupSelector;
+                _valueParser = new JsonArrayOfGroupParser<T, TSubGroup>(valueParser, subGroupSelector);
+                _callback = callback;
+            }
+
+            public void Parse(T target, string json, ref int index)
+            {
+                var values = _valueParser.Parse(json, ref index, target);
+                _callback(target, values);
             }
         }
     }

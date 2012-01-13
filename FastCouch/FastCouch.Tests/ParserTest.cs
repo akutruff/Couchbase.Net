@@ -15,6 +15,5 @@ namespace FastCouch.Tests
             Cluster cluster = new Cluster();
             ClusterParser.Instance.Parse(json, cluster);
         }
-
     }
 }

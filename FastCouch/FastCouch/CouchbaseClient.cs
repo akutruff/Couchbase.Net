@@ -28,10 +28,21 @@ namespace FastCouch
 
         private int _nextServerToUseForHttpQuery = Int32.MinValue;
 
+        private Dictionary<string, Cluster> _activeServersToLastReportedClusterDefinition = new Dictionary<string, Cluster>();
+
+        private string _configurationAuthorityServerId = string.Empty;
+
+        private AsyncPattern<TcpClient, ReconnectAttempt> _reconnectMemcachedAsync;
+
         public CouchbaseClient(string bucketName, params Server[] servers)
         {
             lock (_gate)
             {
+                _reconnectMemcachedAsync = AsyncPattern.Create<TcpClient, ReconnectAttempt>(
+                    BeginMemcachedReconnection,
+                    OnMemcacachedReconnectionCompleted,
+                    OnMemcachedReconnectionError);
+
                 _bucketName = bucketName;
                 var cluster = new Cluster();
 
@@ -39,17 +50,16 @@ namespace FastCouch
                 {
                     cluster.AddServer(server);
                 }
-
+                
+                BeginStreamingFromNewServersInCluster(cluster);
+                
                 _cluster = cluster;
-
-                BeginStreamingFromNewServersInCluster();
             }
         }
 
-        public void BeginStreamingFromNewServersInCluster()
+        //Should be in lock when doing this.
+        private void BeginStreamingFromNewServersInCluster(Cluster cluster)
         {
-            Cluster cluster = _cluster;
-
             foreach (var server in cluster.Servers)
             {
                 if (server.StreamingHttpClient == null)
@@ -60,24 +70,38 @@ namespace FastCouch
             }
         }
 
+        //Should be in lock when doing this
         private void RequestServerStreamingMap(Server server)
         {
-            string hostName = server.HostName;
-            var uri = new UriBuilder { Path = String.Format("pools/default/bucketsStreaming/{2}", hostName, server.StreamingPort, _bucketName) };
+            string serverId = server.Id;
+            var uri = new UriBuilder { Path = String.Format("pools/default/bucketsStreaming/{2}", server.HostName, server.StreamingPort, _bucketName) };
 
-            var streamingCommand = new LineReadingHttpCommand(uri, null, (json, _) => OnServerStreamMapUpdated(hostName, json), (response, value, state) => { });
+            var streamingCommand = new LineReadingHttpCommand(uri, null, (json, _) => OnServerStreamMapUpdated(serverId, json), (response, value, state) => { });
             server.StreamingHttpClient.TrySend(streamingCommand);
         }
 
-        public bool OnServerStreamMapUpdated(string hostName, string json)
+        public bool OnServerStreamMapUpdated(string serverId, string json)
         {
             //Console.WriteLine("J: " + json);
 
             if (string.IsNullOrEmpty(json))
                 return true;
 
-            var newCluster = new Cluster();
-            ClusterParser.Instance.Parse(json, newCluster);
+            Cluster parsedClusterDefinition;
+
+            //Console.WriteLine(json);
+            //Console.WriteLine();
+
+            try
+            {
+                parsedClusterDefinition = new Cluster();
+                ClusterParser.Instance.Parse(json, parsedClusterDefinition);
+            }
+            catch
+            {
+                //Console.WriteLine(json);
+                throw;
+            }
 
             lock (_gate)
             {
@@ -85,37 +109,131 @@ namespace FastCouch
                 {
                     return false;
                 }
+
                 Cluster currentCluster = _cluster;
 
-                newCluster.ConnectMemcachedClients(currentCluster, OnPossiblyRecoverableMemcachedError, OnDisconnection, OnViewRequestError);
+                if (currentCluster.GetServerById(serverId) == null)
+                {
+                    return false;
+                }
 
-                BeginStreamingFromNewServersInCluster();
+                _activeServersToLastReportedClusterDefinition[serverId] = parsedClusterDefinition;
 
-                _cluster = newCluster;
+                if (string.IsNullOrEmpty(_configurationAuthorityServerId))
+                {
+                	_configurationAuthorityServerId = serverId;
+                }
 
-                _hasClusterVBucketMapBeenUpdatedAtLeastOnce = true;
-                Monitor.Pulse(_gate);
+                UpdateConfigurationAuthorityServerBasedOnMostAvailableServer();
+
+                Console.WriteLine("report from: " + serverId + " currentAuthority: " + _configurationAuthorityServerId);
+                if (serverId == _configurationAuthorityServerId)
+                {
+                    var newAuthorityClusterDefinition = _activeServersToLastReportedClusterDefinition[_configurationAuthorityServerId];
+
+                    //Clone so that the table of _activeServersToLastReportedClusterConfig does not have references to tcpClient, htttpClient, etc.
+                    var newAuthorityCluster = newAuthorityClusterDefinition.Clone();
+
+                    newAuthorityCluster.ConfigureClusterFromExistingClusterAndCommitAnyConnectionChanges(
+                        currentCluster,
+                        OnPossiblyRecoverableMemcachedError,
+                        OnMemcachedDisconnection,
+                        OnViewRequestError);
+
+                    foreach (var activeServerId in _activeServersToLastReportedClusterDefinition.Keys.ToList())
+                    {
+                        if (newAuthorityClusterDefinition.GetServerById(activeServerId) == null)
+                        {
+                            _activeServersToLastReportedClusterDefinition.Remove(activeServerId);
+                        }
+                    }
+
+                    foreach (var reconnectionAttempt in _currentlyUnderwayMemcachedReconnectAttempts.ToList())
+                    {
+                        if (newAuthorityClusterDefinition.GetServerById(reconnectionAttempt.Server.Id) == null)
+                        {
+                            _currentlyUnderwayMemcachedReconnectAttempts.Remove(reconnectionAttempt);
+                            reconnectionAttempt.Cancel();
+                        }
+                    }
+
+                    BeginStreamingFromNewServersInCluster(newAuthorityCluster);
+
+                    _hasClusterVBucketMapBeenUpdatedAtLeastOnce = true;
+
+                    currentCluster = newAuthorityCluster;
+                    _cluster = currentCluster;
+
+                    Monitor.Pulse(_gate);
+                }
+
+                bool isThisServerStillInTheCluster = _activeServersToLastReportedClusterDefinition.ContainsKey(serverId);
+
+                return isThisServerStillInTheCluster;
             }
-
-            var isThisServerStillInTheCluster = newCluster.GetServerByHostName(hostName) != null;
-
-            return isThisServerStillInTheCluster;
         }
 
-        private void OnServerStreamingMapDisconnected(string hostName, HttpCommand command)
+        //Must be called within a lock
+        private void UpdateConfigurationAuthorityServerBasedOnMostAvailableServer()
         {
-            Cluster cluster = _cluster;
-            if (!GetHasQuit() &&
-                cluster.GetServerByHostName(hostName) != null)
+            int mostMentionedCount = 0;
+            string mostMentionedServerId = string.Empty;
+
+            var serverMentionCounts = new Dictionary<string, int>();
+            foreach (var clusterDefinition in _activeServersToLastReportedClusterDefinition.Values)
             {
-                //Wait a bit and ensure that the retry is executed asynchronously.
-                ThreadPool.QueueUserWorkItem(_ =>
+                for (int i = 0; i < clusterDefinition.Servers.Count; i++)
                 {
-                    Thread.Sleep(1000);
-                    var server = cluster.GetServerByHostName(hostName);
-                    RequestServerStreamingMap(server);
-                });
+                    var serverIdMentionedByCluster = clusterDefinition.Servers[i].Id;
+
+                    int currentCount;
+                    serverMentionCounts.TryGetValue(serverIdMentionedByCluster, out currentCount);
+
+                    int newCount = currentCount + 1;
+                    if (newCount > mostMentionedCount)
+                    {
+                        mostMentionedCount = newCount;
+                        mostMentionedServerId = serverIdMentionedByCluster;
+                    }
+
+                    serverMentionCounts[serverIdMentionedByCluster] = newCount;
+                }
             }
+
+            int mentionCountOfCurrentAuthority;
+            if (!serverMentionCounts.TryGetValue(_configurationAuthorityServerId, out mentionCountOfCurrentAuthority) ||
+                mostMentionedCount > mentionCountOfCurrentAuthority)
+            {
+                _configurationAuthorityServerId = mostMentionedServerId;
+            }
+        }
+
+        private void OnServerStreamingMapDisconnected(string serverId, HttpCommand command)
+        {
+            lock (_gate)
+            {
+                _activeServersToLastReportedClusterDefinition.Remove(serverId);
+            }
+
+            //Wait a bit and ensure that the retry is executed asynchronously.
+
+            //TODO: AK maybe use a Timer instead of a wait? Probably better for the threadpool.
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                Thread.Sleep(1000);
+
+                lock (_gate)
+                {
+                    Cluster cluster = _cluster;
+                    var server = cluster.GetServerById(serverId);
+
+                    if (!_hasQuit && server != null)
+                    {
+                        RequestServerStreamingMap(server);
+                    }
+                }
+            });
+
         }
 
         public bool WaitForInitialClusterUpdate(int millisecondsTimeout)
@@ -125,10 +243,13 @@ namespace FastCouch
             {
                 var millisecondsToWait = millisecondsTimeout;
                 var watch = Stopwatch.StartNew();
-                      
+
                 while (!_hasClusterVBucketMapBeenUpdatedAtLeastOnce)
                 {
-                    Monitor.Wait(_gate, millisecondsToWait);
+                    if (!Monitor.Wait(_gate, millisecondsToWait))
+                    {
+                        return false;
+                    }
 
                     int elapsed = (int)watch.ElapsedMilliseconds;
                     if (elapsed >= millisecondsTimeout)
@@ -145,10 +266,15 @@ namespace FastCouch
             var servers = new List<Server> { new Server(hostName) };
             servers.AddRange(hostNames.Select(host => new Server(hostName)));
 
+            return Connect(bucketName, millisecondsToWaitForVBucketMap, servers.ToArray());
+        }
+        
+        public static CouchbaseClient Connect(string bucketName, int millisecondsToWaitForVBucketMap, params Server[] servers)
+        {
             CouchbaseClient client;
             try
             {
-                client = new CouchbaseClient(bucketName, servers.ToArray());
+                client = new CouchbaseClient(bucketName, servers);
             }
             catch (Exception e)
             {
@@ -250,9 +376,9 @@ namespace FastCouch
             return false;
         }
 
-        private void OnDisconnection(string hostName, IEnumerable<MemcachedCommand> pendingSends, IEnumerable<MemcachedCommand> pendingReceives)
+        private void OnMemcachedDisconnection(string serverId, IEnumerable<MemcachedCommand> pendingSends, IEnumerable<MemcachedCommand> pendingReceives)
         {
-            NotifyCommands(pendingReceives, ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
+            NotifyCommands(pendingReceives, ResponseStatus.DisconnectionOccuredBeforeResponseReceived);
 
             if (GetHasQuit())
             {
@@ -273,98 +399,135 @@ namespace FastCouch
                 }
             }
 
-            TryToReconnectServerAndUpdateClusterIfServerStillExists(hostName);
+            TryToReconnectServerAndUpdateClusterIfServerStillExists(serverId);
+
+
         }
 
-        private void TryToReconnectServerAndUpdateClusterIfServerStillExists(string hostName)
+        private IAsyncResult BeginMemcachedReconnection(TcpClient tcpClient, AsyncPattern<TcpClient, ReconnectAttempt> pattern, ReconnectAttempt reconnectAttempt)
         {
-            while (!GetHasQuit())
-            {
-                var serverWithDisconnectedMemcachedClient = _cluster.GetServerByHostName(hostName);
+            var result = tcpClient.BeginConnect(
+                reconnectAttempt.Server.HostName,
+                reconnectAttempt.Server.MemcachedPort,
+                pattern.OnCompleted,
+                reconnectAttempt);
 
-                if (serverWithDisconnectedMemcachedClient == null)
-                    return;
-
-                const int millisecondsToWaitBetweenReconnectAttempts = 1000;
-                try
-                {
-                    TcpClient client = new TcpClient(hostName, serverWithDisconnectedMemcachedClient.Port);
-                    var ar = client.BeginConnect(serverWithDisconnectedMemcachedClient.HostName, serverWithDisconnectedMemcachedClient.Port, result =>
-                    {
-                        if (result.CompletedSynchronously)
-                            return;
-
-                        try
-                        {
-                            client.EndConnect(result);
-
-                            OnReconnect(hostName, client);
-                        }
-                        catch
-                        {
-                            //Wait and try again.
-                            Thread.Sleep(millisecondsToWaitBetweenReconnectAttempts);
-                            TryToReconnectServerAndUpdateClusterIfServerStillExists(hostName);
-                        }
-                    }, null);
-
-                    if (!ar.CompletedSynchronously)
-                        return;
-
-                    OnReconnect(hostName, client);
-                    return;
-                }
-                catch
-                {
-                    //Wait and try again.
-                    Thread.Sleep(millisecondsToWaitBetweenReconnectAttempts);
-                }
-            }
+            return result;
         }
 
-        private void OnReconnect(string hostName, TcpClient tcpClient)
+        private HashSet<ReconnectAttempt> _currentlyUnderwayMemcachedReconnectAttempts = new HashSet<ReconnectAttempt>();
+
+        private AsyncPatternResult<TcpClient, ReconnectAttempt> OnMemcacachedReconnectionCompleted(IAsyncResult result, ReconnectAttempt reconnectAttempt)
         {
+            TcpClient tcpClient = reconnectAttempt.TcpClient;
+            tcpClient.EndConnect(result);
+
             lock (_gate)
             {
                 var cluster = _cluster;
 
                 //Update the cluster after we have successfully reconnected.
                 var newCluster = cluster.Clone();
-                var serverInNewCluster = newCluster.GetServerByHostName(hostName);
 
-                if (serverInNewCluster == null || !_hasQuit)
+                var serverInLatestCluster = newCluster.GetServerById(reconnectAttempt.Server.Id);
+
+                if (_hasQuit ||
+                    serverInLatestCluster == null ||
+                    reconnectAttempt.HasBeenCanceled)
                 {
-                    try
-                    {
-                        tcpClient.GetStream().Close();
-                        tcpClient.Close();
-                    }
-                    catch
-                    {
-                    }
-                    return;
+                    _currentlyUnderwayMemcachedReconnectAttempts.Remove(reconnectAttempt);
+                    reconnectAttempt.Cancel();
+                }
+                else
+                {
+                    MemcachedClient newMemcachedClient = new MemcachedClient(serverInLatestCluster.Id, serverInLatestCluster.HostName, serverInLatestCluster.MemcachedPort);
+
+                    newMemcachedClient.OnDisconnected += OnMemcachedDisconnection;
+                    newMemcachedClient.OnRecoverableError += OnPossiblyRecoverableMemcachedError;
+                    newMemcachedClient.Connect(tcpClient);
+
+                    serverInLatestCluster.MemcachedClient = newMemcachedClient;
+
+                    _currentlyUnderwayMemcachedReconnectAttempts.Remove(reconnectAttempt);
+                    _cluster = newCluster;
                 }
 
-                MemcachedClient newMemcachedClient = new MemcachedClient(serverInNewCluster.HostName, serverInNewCluster.Port);
-
-                newMemcachedClient.OnDisconnected += OnDisconnection;
-                newMemcachedClient.OnRecoverableError += OnPossiblyRecoverableMemcachedError;
-                newMemcachedClient.Connect(tcpClient);
-
-                serverInNewCluster.MemcachedClient = newMemcachedClient;
-
-                _cluster = newCluster;
+                return _reconnectMemcachedAsync.Stop();
             }
         }
 
-        private void OnPossiblyRecoverableMemcachedError(string hostName, MemcachedCommand command)
+        private AsyncPatternResult<TcpClient, ReconnectAttempt> OnMemcachedReconnectionError(IAsyncResult result, ReconnectAttempt reconnectAttempt, Exception e)
+        {
+            lock (_gate)
+            {
+                var cluster = _cluster;
+
+                var serverInLatestCluster = cluster.GetServerById(reconnectAttempt.Server.Id);
+
+                if (_hasQuit ||
+                    serverInLatestCluster == null ||
+                    reconnectAttempt.HasBeenCanceled)
+                {
+                    _currentlyUnderwayMemcachedReconnectAttempts.Remove(reconnectAttempt);
+                    reconnectAttempt.Cancel();
+                }
+                else
+                {
+                    const int millisecondsToWaitBetweenReconnectAttempts = 1000;
+
+                    reconnectAttempt.Timer = new Timer(
+                        OnReconnectTimerElapsed,
+                        reconnectAttempt,
+                        millisecondsToWaitBetweenReconnectAttempts,
+                        Timeout.Infinite);
+                }
+
+                return _reconnectMemcachedAsync.Stop();
+            }
+        }
+
+        public void OnReconnectTimerElapsed(object state)
+        {
+            ReconnectAttempt reconnectAttempt = (ReconnectAttempt)state; 
+            
+            lock (_gate)
+            {
+                if (!reconnectAttempt.HasBeenCanceled)
+                {
+                    _reconnectMemcachedAsync.BeginAsync(reconnectAttempt.TcpClient, reconnectAttempt);
+                }
+            }
+        }
+
+        private void TryToReconnectServerAndUpdateClusterIfServerStillExists(string serverId)
+        {
+            lock (_gate)
+            {
+                Console.WriteLine("reconnecting");
+                Cluster cluster = _cluster;
+                var serverWithDisconnectedMemcachedClient = cluster.GetServerById(serverId);
+
+                if (_hasQuit ||
+                    serverWithDisconnectedMemcachedClient == null)
+                {
+                    return;
+                }
+
+                TcpClient client = new TcpClient();
+                var reconnectAttempt = new ReconnectAttempt(client, serverWithDisconnectedMemcachedClient);
+
+                _reconnectMemcachedAsync.BeginAsync(client, reconnectAttempt);
+            }
+        }
+
+        private void OnPossiblyRecoverableMemcachedError(string serverid, MemcachedCommand command)
         {
             var cluster = _cluster;
 
             switch (command.ResponseStatus)
             {
                 case ResponseStatus.VbucketBelongsToAnotherServer:
-                    OnWrongVBucketForServer(hostName, command);
+                    OnWrongVBucketForServer(serverid, command);
                     break;
                 case ResponseStatus.Busy:
                 case ResponseStatus.TemporaryFailure:
@@ -375,23 +538,24 @@ namespace FastCouch
             }
         }
 
-        private void OnWrongVBucketForServer(string hostNameOfLastServerTriedToSendTo, MemcachedCommand command)
+        private void OnWrongVBucketForServer(string lastServerTriedToSendToId, MemcachedCommand command)
         {
             Cluster cluster = _cluster;
 
             var fastForwardedServers = cluster.GetFastForwardedServersForVBucket(command.VBucketId);
 
-            if (!TrySendCommand(fastForwardedServers, command))
+            if (fastForwardedServers == null ||
+                !TrySendCommand(fastForwardedServers, command))
             {
-                SendByLinearlyPollingServers(cluster, hostNameOfLastServerTriedToSendTo, command);
+                SendByLinearlyPollingServers(cluster, lastServerTriedToSendToId, command);
                 return;
             }
         }
 
-        private static void SendByLinearlyPollingServers(Cluster cluster, string hostNameOfLastServerTriedToSendTo, MemcachedCommand command)
+        private static void SendByLinearlyPollingServers(Cluster cluster, string lastServerTriedToSendToId, MemcachedCommand command)
         {
-            int indexOfServerToTry = GetIndexOfNextServerInCluster(cluster, hostNameOfLastServerTriedToSendTo);
-            for (int i = 0; i < cluster.Servers.Count - 1; i++)
+            int indexOfServerToTry = GetIndexOfNextServerInCluster(cluster, lastServerTriedToSendToId);
+            for (int i = 0; i < cluster.Servers.Count; i++)
             {
                 if (cluster.Servers[indexOfServerToTry].TrySend(command))
                 {
@@ -404,9 +568,9 @@ namespace FastCouch
             command.NotifyComplete(ResponseStatus.DisconnectionOccuredWhileOperationWaitingToBeSent);
         }
 
-        private static int GetIndexOfNextServerInCluster(Cluster cluster, string hostNameOfLastServerTriedToSendTo)
+        private static int GetIndexOfNextServerInCluster(Cluster cluster, string lastServerTriedToSendToId)
         {
-            var indexOfLastServerTriedToSendTo = cluster.Servers.FindIndex(x => x.HostName == hostNameOfLastServerTriedToSendTo);
+            var indexOfLastServerTriedToSendTo = cluster.Servers.FindIndex(x => x.Id == lastServerTriedToSendToId);
 
             int indexOfServerToTry = indexOfLastServerTriedToSendTo == -1 ? 0 : MathUtils.CircularIncrement(indexOfLastServerTriedToSendTo, cluster.Servers.Count);
             return indexOfServerToTry;
@@ -417,16 +581,16 @@ namespace FastCouch
             return new View(this, document, name);
         }
 
-        public void ExecuteHttpQuery(UriBuilder uriBuilder, string startOrEndKeyHint, Action<ResponseStatus, string, object> callback, object state)
+        public void ExecuteViewHttpQuery(UriBuilder uriBuilder, string keyHintForSelectingServer, Action<ResponseStatus, string, object> callback, object state)
         {
             Cluster cluster = _cluster;
 
             HttpCommand httpCommand = new HttpCommand(uriBuilder, state, callback);
 
-            TrySendToviewRequestToFirstAvailableServer(cluster, httpCommand, startOrEndKeyHint);
+            TrySendingViewRequestToFirstAvailableServer(cluster, httpCommand, keyHintForSelectingServer);
         }
 
-        private void TrySendToviewRequestToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand, string keyHintForSelectingServer)
+        private void TrySendingViewRequestToFirstAvailableServer(Cluster cluster, HttpCommand httpCommand, string keyHintForSelectingServer)
         {
             //We are going to use the key hint to help destribute which server should be getting the requests.
             if (!string.IsNullOrEmpty(keyHintForSelectingServer))
@@ -453,7 +617,7 @@ namespace FastCouch
                 }
             }
 
-            httpCommand.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
+            httpCommand.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeResponseReceived);
         }
 
         private Server GetNextServerToUseForQuery(Cluster cluster)
@@ -468,7 +632,7 @@ namespace FastCouch
             var cluster = _cluster;
             if (GetHasQuit())
             {
-                command.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeOperationCouldBeSent);
+                command.NotifyComplete(ResponseStatus.DisconnectionOccuredBeforeResponseReceived);
                 return;
             }
 
@@ -485,12 +649,10 @@ namespace FastCouch
 
         private bool GetHasQuit()
         {
-            bool hasQuit;
             lock (_gate)
             {
-                hasQuit = _hasQuit;
+                return _hasQuit;
             }
-            return hasQuit;
         }
 
         public void Dispose()
@@ -505,6 +667,7 @@ namespace FastCouch
                     return;
                 }
 
+                _currentlyUnderwayMemcachedReconnectAttempts.Clear();
                 _hasBeenDisposed = true;
                 _hasQuit = true;
             }

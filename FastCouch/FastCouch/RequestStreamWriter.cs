@@ -24,6 +24,19 @@ namespace FastCouch
 
         AsyncPattern<Stream> _writeAsync;
 
+        private const int ReceiveBufferSize = 4096;
+
+        private readonly byte[] _receiveBuffer = new byte[ReceiveBufferSize];
+
+        private const int ResponseHeaderSize = 24;
+        private readonly byte[] _responseHeader = new byte[ResponseHeaderSize];
+
+        private const int MaxExtrasLength = 255;
+        private readonly byte[] _extras = new byte[MaxExtrasLength];
+
+        private const int MaxKeyLength = 255;
+        private readonly byte[] _key = new byte[MaxKeyLength];
+
         public RequestStreamWriter(Stream stream, Func<MemcachedCommand, MemcachedCommand> onCommandSent, Action onDisconnect)
         {
             _stream = stream;

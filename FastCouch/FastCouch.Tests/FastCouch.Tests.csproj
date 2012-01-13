@@ -50,10 +50,16 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="ExperimentTest.cs" />
+    <Compile Include="ExplanationOfTransactionalMemory.cs" />
+    <Compile Include="CouchbaseClientScalingTests.cs" />
     <Compile Include="CouchbaseClientTest.cs" />
-    <Compile Include="Mocks\CouchbaseServer.cs" />
+    <Compile Include="Mocks\CouchbaseCluster.cs" />
+    <Compile Include="Mocks\CouchbaseClusterTest.cs" />
     <Compile Include="Mocks\MemcachedServer.cs" />
+    <Compile Include="Mocks\Node.cs" />
     <Compile Include="Mocks\StreamingClusterDataService.cs" />
+    <Compile Include="Mocks\StreamingClusterDataServiceTest.cs" />
     <Compile Include="ParserTest.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="RequestStreamWriterTest.cs" />

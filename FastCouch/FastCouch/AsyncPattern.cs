@@ -77,6 +77,8 @@ namespace FastCouch
                 }
                 catch (Exception e)
                 {
+                    Console.WriteLine();
+                    Console.WriteLine(e.ToString());
                     nextTarget = _errorHandler(result, e);
 
                     if (nextTarget == null)
@@ -102,6 +104,8 @@ namespace FastCouch
             }
             catch (Exception e)
             {
+                Console.WriteLine();
+                Console.WriteLine(e.ToString());
                 nextTarget = _errorHandler(result, e);
             }
 
@@ -179,6 +183,9 @@ namespace FastCouch
                 }
                 catch (Exception e)
                 {
+                    Console.WriteLine();
+                    Console.WriteLine(e.ToString());
+
                     nextTargetAndState = _errorHandler(result, (TState)result.AsyncState, e);
                     
                     if (nextTargetAndState.Target == null)
@@ -207,6 +214,8 @@ namespace FastCouch
             }
             catch (Exception e)
             {
+                Console.WriteLine();
+                Console.WriteLine(e.ToString());
                 nextTargetAndState = _errorHandler(result, (TState)result.AsyncState, e);
             }
 

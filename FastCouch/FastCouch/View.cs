@@ -50,7 +50,7 @@ namespace FastCouch
             ViewStalenessOptions stalenessOptions = ViewStalenessOptions.NotStale)
         {
             var uriBuilder = GetUrlForQuery(key, startKey, endKey, limit, skip, timeOut, sortDirection, stalenessOptions);
-            _client.ExecuteHttpQuery(uriBuilder, !string.IsNullOrEmpty(key) ? key : !string.IsNullOrEmpty(startKey) ? startKey : endKey, callback, state);
+            _client.ExecuteViewHttpQuery(uriBuilder, !string.IsNullOrEmpty(key) ? key : !string.IsNullOrEmpty(startKey) ? startKey : endKey, callback, state);
         }
 
         //Optimize for multi key gets, so that they may batched into one query

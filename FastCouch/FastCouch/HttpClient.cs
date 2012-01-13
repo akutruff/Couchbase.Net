@@ -7,10 +7,11 @@ using System.Threading;
 
 namespace FastCouch
 {
-    public class HttpClient : IDisposable
+    public class HttpClient 
     {
         public string HostName { get; private set; }
         public int Port { get; private set; }
+        public string ServerId { get; private set; }
         private bool _hasBeenDisposed;
         private readonly object _gate = new object();
         private Action<string, HttpCommand> _onFailure;
@@ -20,8 +21,9 @@ namespace FastCouch
 
         HashSet<HttpCommand> _pendingCommands = new HashSet<HttpCommand>();
 
-        public HttpClient(string hostName, int port, Action<string, HttpCommand> onFailure)
+        public HttpClient(string serverId, string hostName, int port, Action<string, HttpCommand> onFailure)
         {
+            ServerId = serverId;
             HostName = hostName;
             Port = port;
 
@@ -125,7 +127,7 @@ namespace FastCouch
 
             RemoveFromPendingCommands(command);
 
-            _onFailure(this.HostName, command);
+            _onFailure(this.ServerId, command);
         }
 
         private void RemoveFromPendingCommands(HttpCommand command)

@@ -20,6 +20,7 @@ namespace FastCouch.Tests
             //_target = CouchbaseClient.Connect("default", Int32.MaxValue, "192.168.1.4");
         }
 
+
         [Test]
         public void Test()
         {

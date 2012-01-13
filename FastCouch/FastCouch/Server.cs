@@ -7,25 +7,35 @@ namespace FastCouch
     //Treat this as an immutable object.
     public class Server : IDisposable
     {
+        public string Id { get; private set; }
+        
         public string HostName { get; private set; }
-        public int StreamingPort { get { return 8091; } }
-        //public int ViewPort { get { return 5984; } }
-        public int ViewPort { get { return 8092; } }
 
-        public int Port { get; private set; }
+        public int StreamingPort { get; set; }
+        public int ApiPort { get; set; }
+
+        public int MemcachedPort { get; set; }
 
         public MemcachedClient MemcachedClient { get; set; }
         public HttpClient ViewHttpClient { get;  set; }
         public HttpClient StreamingHttpClient { get; set; }
 
-        public Server(string hostName, int port)
+        public Server(string hostName, int memcachedPort, int streamingPort, int apiPort)
         {
             HostName = hostName;
-            Port = port;
+            this.MemcachedPort = memcachedPort;
+            this.StreamingPort = streamingPort;
+            this.ApiPort = apiPort;
+            this.Id = GetId(hostName, memcachedPort);
+        }
+
+        public Server(string hostName, int memcachedPort)
+            : this(hostName, memcachedPort, 8091, 8092)
+        {
         }
 
         public Server(string hostName)
-            : this(hostName, 11210)
+            : this(hostName, 11210, 8091, 8092)
         {
         }
 
@@ -52,21 +62,22 @@ namespace FastCouch
             
             if (this.ViewHttpClient == null)
             {
-                this.ViewHttpClient = new HttpClient(this.HostName, this.ViewPort, onHttpFailure);
+                this.ViewHttpClient = new HttpClient(this.Id, this.HostName, this.ApiPort, onHttpFailure);
             }
         }
         
         public void ConnectStreamingClient(Action<string, HttpCommand> onStreamingFailure)
         {
-            StreamingHttpClient = new HttpClient(this.HostName, this.StreamingPort, onStreamingFailure);
+            StreamingHttpClient = new HttpClient(this.Id, this.HostName, this.StreamingPort, onStreamingFailure);
         }
         
         public MemcachedClient CreateNewMemcachedClient(Action<string, MemcachedCommand> onRecoverableError, Action<string, IEnumerable<MemcachedCommand>, IEnumerable<MemcachedCommand>> onDisconnected)
         {
-            MemcachedClient client = new MemcachedClient(this.HostName, this.Port);
+            MemcachedClient client = new MemcachedClient(this.Id, this.HostName, this.MemcachedPort);
             client.OnRecoverableError += onRecoverableError;
             client.OnDisconnected += onDisconnected;
             client.Connect();
+
             return client;
         }
 
@@ -88,10 +99,16 @@ namespace FastCouch
             }
         }
 
+        public static string GetId(string hostName, int memcachedPort)
+        {
+            return String.Intern(hostName + memcachedPort);
+        }
+
         public Server Clone()
         {
-            return new Server(this.HostName, this.Port)
+            return new Server(this.HostName, this.MemcachedPort, this.StreamingPort, this.ApiPort)
                 {
+                    Id = this.Id,
                     MemcachedClient = this.MemcachedClient,
                     ViewHttpClient = this.ViewHttpClient,
                     StreamingHttpClient = this.StreamingHttpClient,

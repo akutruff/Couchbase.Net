@@ -12,6 +12,7 @@ namespace FastCouch
         private Decoder _decoder;
         private ArraySegment<char> _decodeBuffer;
         private int _previousByte = 0;
+        private bool _hasBeenDisposed = false;
 
         public StringDecoder()
         {
@@ -81,7 +82,7 @@ namespace FastCouch
                         char* pDecode = pDecodeArray + _decodeBuffer.Offset;
 
                         byte charAsByte = (byte)characterToResetDecoding;
-                        
+
                         for (int i = 0; i < sourceBuffer.Count; i++)
                         {
                             int currentByte = *(pSource + i);
@@ -95,7 +96,7 @@ namespace FastCouch
 
                                 int bytesForRestOfStringExcludingTheSpecialCharacter = Math.Max(sourceBuffer.Count - numberOfBytesToDecode - 1, 0);
 
-                                int indexOfByteImmediatelyFollowingTheSpecialCharacter = Math.Min(sourceBuffer.Offset + numberOfBytesToDecode + 1, sourceBuffer.Count);
+                                int indexOfByteImmediatelyFollowingTheSpecialCharacter = sourceBuffer.Offset + Math.Min(numberOfBytesToDecode + 1, sourceBuffer.Count);
 
                                 bytesLeftover = new ArraySegment<byte>(sourceBuffer.Array, indexOfByteImmediatelyFollowingTheSpecialCharacter, bytesForRestOfStringExcludingTheSpecialCharacter);
 
@@ -120,6 +121,10 @@ namespace FastCouch
 
         public void Dispose()
         {
+            if (_hasBeenDisposed)
+            {
+                throw new Exception();
+            }
             BufferPool.Return(_decodeBuffer);
         }
 

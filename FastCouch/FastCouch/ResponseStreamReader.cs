@@ -39,6 +39,8 @@ namespace FastCouch
 
         private bool _hasQuit;
 
+        private StringDecoder _errorDecoder;
+
         AsyncPattern<Stream> _readAsync;
 
         public ResponseStreamReader(
@@ -74,6 +76,7 @@ namespace FastCouch
             if (_errorDecoder != null)
             {
             	_errorDecoder.Dispose();
+                _errorDecoder = null;
             }
 
             _readState = new ReadState();
@@ -104,6 +107,9 @@ namespace FastCouch
 
         private Stream OnBeginReadFailed(IAsyncResult result, Exception e)
         {
+            Console.WriteLine("Response stream readoner disconnected");
+            Console.WriteLine(e.ToString());
+
             Disconnnect();
             return null;
         }
@@ -220,7 +226,6 @@ namespace FastCouch
             }
         }
 
-        private StringDecoder _errorDecoder;
         private void ReadError()
         {
             int bytesToCopy = BufferUtils.CalculateMaxPossibleBytesForCopy(_currentByteInReceiveBuffer, _bytesAvailableFromLastRead, _readState.CurrentByteOfValue, _readState.ValueLength);
@@ -230,8 +235,7 @@ namespace FastCouch
             	_errorDecoder = new StringDecoder();
             }
 
-            _errorDecoder.Decode(new ArraySegment<byte>(_receiveBuffer, _bytesAvailableFromLastRead, bytesToCopy));
-            //_readState.Command.ErrorMessage += System.Text.Encoding.UTF8.GetString(_receiveBuffer, _currentByteInReceiveBuffer, bytesToCopy);
+            _errorDecoder.Decode(new ArraySegment<byte>(_receiveBuffer, _currentByteInReceiveBuffer, bytesToCopy));
 
             _currentByteInReceiveBuffer += bytesToCopy;
             _readState.CurrentByteOfValue += bytesToCopy;
@@ -260,17 +264,6 @@ namespace FastCouch
 
             public long Cas;
             public int CurrentByteOfValue;
-
-            public bool HasReadAllDataAfterHeader
-            {
-                get
-                {
-                    return
-                        this.CurrentByteOfValue >= this.ValueLength &&
-                        CurrentByteOfKey >= this.KeyLength &&
-                        this.CurrentByteOfExtras >= this.ExtrasLength;
-                }
-            }
         }
     }
 }

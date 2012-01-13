@@ -72,6 +72,10 @@ namespace FastCouch
             int freeBufferIndex;
             lock (_gate)
             {
+                if (_freeBufferCount >= _numberOfBuffers)
+                {
+                    throw new Exception("Too many buffers returned");
+                }
                 freeBufferIndex = _freeBufferCount++;
             }
 

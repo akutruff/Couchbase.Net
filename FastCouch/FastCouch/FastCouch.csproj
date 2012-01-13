@@ -64,12 +64,14 @@
     <Compile Include="MemcachedCommands\Opcodes.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="MemcachedCommands\QuitCommand.cs" />
+    <Compile Include="ReconnectAttempt.cs" />
     <Compile Include="RequestStreamWriter.cs" />
     <Compile Include="ResponseStreamReader.cs" />
     <Compile Include="ResponseStatus.cs" />
     <Compile Include="Server.cs" />
     <Compile Include="MemcachedCommands\SetCommand.cs" />
     <Compile Include="StringDecoder.cs" />
+    <Compile Include="TcpClientExtensions.cs" />
     <Compile Include="UriQueryBuilder.cs" />
     <Compile Include="VBucketCalculator.cs" />
     <Compile Include="View.cs" />
