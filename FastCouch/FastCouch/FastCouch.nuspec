@@ -1,0 +1,13 @@
+<?xml version="1.0"?>
+<package >
+  <metadata>
+    <id>$id$</id>
+    <version>$version$</version>
+    <title>$title$</title>
+    <authors>Andy Kutruff</authors>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <description>The fastest Couchbase .NET client ever</description>
+    <releaseNotes>Initial release</releaseNotes>
+    <copyright>Copyright 2012 Reentry Games LLC</copyright>
+  </metadata>
+</package>
